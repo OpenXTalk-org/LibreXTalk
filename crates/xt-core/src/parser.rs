@@ -123,6 +123,24 @@ impl Parser {
         )
     }
 
+    fn is_word_at(&self, offset: usize, word: &str) -> bool {
+        self.word_at(offset)
+            .is_some_and(|w| w.eq_ignore_ascii_case(word))
+    }
+
+    fn chunk_kind_at(&self, offset: usize) -> Option<ChunkKind> {
+        self.word_at(offset).and_then(chunk_kind_of)
+    }
+
+    fn ordinal_at(&self, offset: usize) -> Option<Ordinal> {
+        self.word_at(offset).and_then(ordinal_of)
+    }
+
+    /// `of`, `in`, and `from` are interchangeable (spec CHK-10).
+    fn is_prep(&self) -> bool {
+        self.is_word("of") || self.is_word("in") || self.is_word("from")
+    }
+
     fn take_word(&mut self) -> Result<String, XtError> {
         match self.word_at(0).map(|w| w.to_string()) {
             Some(w) => {
@@ -555,11 +573,28 @@ impl Parser {
                     Ok(StmtKind::Wait(WaitKind::For(amount, unit)))
                 }
             }
+            "set" => {
+                self.pos += 1;
+                if !self.is_word("the") {
+                    return Err(self.err_here("Expected 'the' here, as in: set the itemDelimiter to \";\""));
+                }
+                self.pos += 1;
+                let prop = self.take_word()?.to_lowercase();
+                if self.is_word("of") {
+                    return Err(self.err_here("Object properties are not supported yet"));
+                }
+                if !self.is_word("to") {
+                    return Err(self.err_here("Expected 'to' here"));
+                }
+                self.pos += 1;
+                let value = self.parse_expr()?;
+                Ok(StmtKind::Set { prop, value })
+            }
             _ => self.parse_call_or_eval(),
         }
     }
 
-    fn parse_put_target(&mut self) -> Result<Option<(Placement, String)>, XtError> {
+    fn parse_put_target(&mut self) -> Result<Option<(Placement, Target)>, XtError> {
         let placement = if self.is_word("into") {
             Placement::Into
         } else if self.is_word("before") {
@@ -570,12 +605,21 @@ impl Parser {
             return Ok(None);
         };
         self.pos += 1;
-        match self.word_at(0).map(|w| w.to_string()) {
-            Some(name) => {
-                self.pos += 1;
-                Ok(Some((placement, name)))
-            }
-            None => Err(self.err_here("Expected a variable name here")),
+        if self.is_line_end() {
+            return Err(self.err_here("Expected a variable name here"));
+        }
+        let (line, col) = {
+            let t = &self.tokens[self.pos];
+            (t.line, t.col)
+        };
+        let expr = self.parse_primary()?;
+        match expr_to_target(expr) {
+            Some(target) => Ok(Some((placement, target))),
+            None => Err(XtError::at(
+                line,
+                col,
+                "You can only put into a variable, or a chunk of one",
+            )),
         }
     }
 
@@ -583,6 +627,13 @@ impl Parser {
     /// message to a user handler (spec CTX-6), unless an operator follows,
     /// in which case it is an expression.
     fn parse_call_or_eval(&mut self) -> Result<StmtKind, XtError> {
+        // A line that starts with a chunk expression is an expression.
+        let save = self.pos;
+        let starts_chunk = matches!(self.try_parse_chunk(), Ok(Some(_)));
+        self.pos = save;
+        if starts_chunk {
+            return Ok(StmtKind::Eval(self.parse_expr()?));
+        }
         if let Some(name) = self.word_at(0).map(|w| w.to_string()) {
             let is_the_form = name.eq_ignore_ascii_case("the") && self.word_at(1).is_some();
             if !is_the_form && !self.adjacent_paren() && !self.operator_at(1) {
@@ -726,6 +777,9 @@ impl Parser {
                 if w.eq_ignore_ascii_case("the") && self.word_at(1).is_some() {
                     return self.parse_the();
                 }
+                if let Some(chunk) = self.try_parse_chunk()? {
+                    return Ok(chunk);
+                }
                 if self.adjacent_paren() {
                     self.pos += 2; // the name and the opening parenthesis
                     let args = self.parse_args(Some(")"))?;
@@ -751,18 +805,104 @@ impl Parser {
         }
     }
 
+    /// At a word, try to read a chunk expression or a count. Returns
+    /// `Ok(None)` with the position unchanged if the words do not form one,
+    /// because `word` and `line` are ordinary variable names too (spec CTX-4).
+    fn try_parse_chunk(&mut self) -> Result<Option<Expr>, XtError> {
+        // `first word of x`, `last line of x`
+        if self.ordinal_at(0).is_some() && self.chunk_kind_at(1).is_some() {
+            return self.parse_ordinal_chunk().map(Some);
+        }
+        // `number of words in x`
+        if self.is_word("number") && self.is_word_at(1, "of") && self.chunk_kind_at(2).is_some() {
+            self.pos += 2;
+            return self.parse_count().map(Some);
+        }
+        // `word 3 of x`, `item 2 to 4 of x`. If no `of` follows the index,
+        // the word was just a variable, so back up.
+        if let Some(kind) = self.chunk_kind_at(0) {
+            let start = self.pos;
+            self.pos += 1;
+            let sel = match self.parse_expr() {
+                Ok(first) => {
+                    if self.is_word("to") {
+                        self.pos += 1;
+                        match self.parse_expr() {
+                            Ok(last) => Some(ChunkSel::Range(Box::new(first), Box::new(last))),
+                            Err(_) => None,
+                        }
+                    } else {
+                        Some(ChunkSel::At(Box::new(first)))
+                    }
+                }
+                Err(_) => None,
+            };
+            if let Some(sel) = sel {
+                if self.is_prep() {
+                    self.pos += 1;
+                    let of = self.parse_primary()?;
+                    return Ok(Some(Expr::Chunk {
+                        kind,
+                        sel,
+                        of: Box::new(of),
+                    }));
+                }
+            }
+            self.pos = start;
+        }
+        Ok(None)
+    }
+
+    /// Positioned on an ordinal that is followed by a chunk type.
+    fn parse_ordinal_chunk(&mut self) -> Result<Expr, XtError> {
+        let ordinal = self.ordinal_at(0).unwrap_or(Ordinal::Last);
+        let kind = self.chunk_kind_at(1).unwrap_or(ChunkKind::Word);
+        self.pos += 2;
+        if !self.is_prep() {
+            return Err(self.err_here("Expected 'of' here"));
+        }
+        self.pos += 1;
+        let of = self.parse_primary()?;
+        Ok(Expr::Chunk {
+            kind,
+            sel: ChunkSel::Ordinal(ordinal),
+            of: Box::new(of),
+        })
+    }
+
+    /// Positioned on the chunk type after `number of`.
+    fn parse_count(&mut self) -> Result<Expr, XtError> {
+        let kind = self.chunk_kind_at(0).unwrap_or(ChunkKind::Word);
+        self.pos += 1;
+        if !self.is_prep() {
+            return Err(self.err_here("Expected 'in' here"));
+        }
+        self.pos += 1;
+        let of = self.parse_primary()?;
+        Ok(Expr::Count {
+            kind,
+            of: Box::new(of),
+        })
+    }
+
     /// Positioned on `the`, which is followed by a word.
     fn parse_the(&mut self) -> Result<Expr, XtError> {
-        let name = self.word_at(1).unwrap_or("").to_lowercase();
-        if name == "result" {
-            self.pos += 2;
-            Ok(Expr::The(name))
-        } else {
-            self.pos += 1;
-            Err(self.err_here(format!(
-                "Only 'the result' is supported so far, not 'the {name}'"
-            )))
+        self.pos += 1;
+        if self.ordinal_at(0).is_some() && self.chunk_kind_at(1).is_some() {
+            return self.parse_ordinal_chunk();
         }
+        if self.is_word("number") && self.is_word_at(1, "of") && self.chunk_kind_at(2).is_some() {
+            self.pos += 2;
+            return self.parse_count();
+        }
+        let name = self.word_at(0).unwrap_or("").to_lowercase();
+        if name == "result" || name == "itemdelimiter" {
+            self.pos += 1;
+            return Ok(Expr::The(name));
+        }
+        Err(self.err_here(format!(
+            "'the {name}' is not supported yet. Try the result, the itemDelimiter, or the number of words, items, lines, or chars in ..."
+        )))
     }
 }
 
@@ -773,5 +913,48 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::Word(w) => format!("word '{w}'"),
         TokenKind::Op(o) => format!("'{o}'"),
         TokenKind::Newline => "end of line".to_string(),
+    }
+}
+
+fn chunk_kind_of(word: &str) -> Option<ChunkKind> {
+    match word.to_lowercase().as_str() {
+        "char" | "chars" | "character" | "characters" => Some(ChunkKind::Char),
+        "word" | "words" => Some(ChunkKind::Word),
+        "item" | "items" => Some(ChunkKind::Item),
+        "line" | "lines" => Some(ChunkKind::Line),
+        _ => None,
+    }
+}
+
+fn ordinal_of(word: &str) -> Option<Ordinal> {
+    let n = match word.to_lowercase().as_str() {
+        "first" => 1,
+        "second" => 2,
+        "third" => 3,
+        "fourth" => 4,
+        "fifth" => 5,
+        "sixth" => 6,
+        "seventh" => 7,
+        "eighth" => 8,
+        "ninth" => 9,
+        "tenth" => 10,
+        "last" => return Some(Ordinal::Last),
+        "mid" | "middle" => return Some(Ordinal::Middle),
+        "any" => return Some(Ordinal::Any),
+        _ => return None,
+    };
+    Some(Ordinal::Nth(n))
+}
+
+/// Turn an expression into a place `put` can store to, if it is one.
+fn expr_to_target(e: Expr) -> Option<Target> {
+    match e {
+        Expr::Var(name) => Some(Target::Var(name)),
+        Expr::Chunk { kind, sel, of } => Some(Target::Chunk {
+            kind,
+            sel,
+            of: Box::new(expr_to_target(*of)?),
+        }),
+        _ => None,
     }
 }

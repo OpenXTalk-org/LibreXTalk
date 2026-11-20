@@ -44,6 +44,31 @@ pub enum Op {
     Wait(WaitUnit),
     /// Pause for one tick and let the host run.
     Yield,
+    /// Pop the selector operands (see `SelShape`), then the source text, and
+    /// push the chunk.
+    Chunk { kind: ChunkKind, shape: SelShape },
+    /// Pop a text and push how many chunks of this kind it has.
+    Count(ChunkKind),
+    /// Put a value into a chunk of a variable. The value is on the stack
+    /// below the operands of each step.
+    PutChunk {
+        name: String,
+        steps: Vec<(ChunkKind, SelShape)>,
+        placement: Placement,
+    },
+    /// Pop a value and set a global property.
+    SetProp(String),
+}
+
+/// How a chunk is selected, and so how many operands it takes from the stack.
+#[derive(Debug, Clone, Copy)]
+pub enum SelShape {
+    /// No operands: `first`, `last`, `middle`, `any`.
+    Ordinal(Ordinal),
+    /// One operand: the index.
+    At,
+    /// Two operands: the first and last index.
+    Range,
 }
 
 #[derive(Debug)]
@@ -129,15 +154,7 @@ impl Compiler {
                     None => {
                         self.emit(Op::Message);
                     }
-                    Some((Placement::Into, name)) => {
-                        self.emit(Op::Store(name.clone()));
-                    }
-                    Some((Placement::Before, name)) => {
-                        self.emit(Op::StoreBefore(name.clone()));
-                    }
-                    Some((Placement::After, name)) => {
-                        self.emit(Op::StoreAfter(name.clone()));
-                    }
+                    Some((placement, target)) => self.put_target(*placement, target),
                 }
             }
             StmtKind::Get(e) => {
@@ -218,7 +235,59 @@ impl Compiler {
                     self.emit(Op::Global(name.clone()));
                 }
             }
+            StmtKind::Set { prop, value } => {
+                self.expr(value);
+                self.emit(Op::SetProp(prop.clone()));
+            }
         }
+    }
+
+    /// Store the value on top of the stack into a variable or a chunk of one.
+    fn put_target(&mut self, placement: Placement, target: &Target) {
+        // Walk in from the outermost chunk to the variable, then reverse, so
+        // the chunk nearest the variable comes first.
+        let mut steps: Vec<(ChunkKind, &ChunkSel)> = Vec::new();
+        let mut current = target;
+        let name = loop {
+            match current {
+                Target::Var(n) => break n.clone(),
+                Target::Chunk { kind, sel, of } => {
+                    steps.push((*kind, sel));
+                    current = &**of;
+                }
+            }
+        };
+        steps.reverse();
+
+        if steps.is_empty() {
+            match placement {
+                Placement::Into => self.emit(Op::Store(name)),
+                Placement::Before => self.emit(Op::StoreBefore(name)),
+                Placement::After => self.emit(Op::StoreAfter(name)),
+            };
+            return;
+        }
+
+        let mut shapes = Vec::new();
+        for (kind, sel) in &steps {
+            match sel {
+                ChunkSel::Ordinal(o) => shapes.push((*kind, SelShape::Ordinal(*o))),
+                ChunkSel::At(e) => {
+                    self.expr(e);
+                    shapes.push((*kind, SelShape::At));
+                }
+                ChunkSel::Range(a, b) => {
+                    self.expr(a);
+                    self.expr(b);
+                    shapes.push((*kind, SelShape::Range));
+                }
+            }
+        }
+        self.emit(Op::PutChunk {
+            name,
+            steps: shapes,
+            placement,
+        });
     }
 
     /// `wait until cond` (until = true) or `wait while cond` (until = false).
@@ -369,6 +438,26 @@ impl Compiler {
                     argc: args.len(),
                     value: true,
                 });
+            }
+            Expr::Chunk { kind, sel, of } => {
+                self.expr(of);
+                let shape = match sel {
+                    ChunkSel::Ordinal(o) => SelShape::Ordinal(*o),
+                    ChunkSel::At(e) => {
+                        self.expr(e);
+                        SelShape::At
+                    }
+                    ChunkSel::Range(a, b) => {
+                        self.expr(a);
+                        self.expr(b);
+                        SelShape::Range
+                    }
+                };
+                self.emit(Op::Chunk { kind: *kind, shape });
+            }
+            Expr::Count { kind, of } => {
+                self.expr(of);
+                self.emit(Op::Count(*kind));
             }
         }
     }

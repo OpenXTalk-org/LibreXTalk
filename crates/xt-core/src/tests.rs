@@ -452,3 +452,176 @@ fn unfinished_blocks_are_incomplete_not_wrong() {
 fn exit_repeat_outside_a_loop_is_a_syntax_error() {
     assert!(run_err("exit repeat").message.contains("inside a repeat"));
 }
+
+// ----- chunk expressions -----------------------------------------------------
+
+#[test]
+fn reading_words_items_lines_and_characters() {
+    assert_eq!(run("put word 2 of \"alpha beta gamma\""), vec!["beta"]);
+    assert_eq!(run("put item 2 of \"a,b,c\""), vec!["b"]);
+    assert_eq!(run("put char 3 of \"hello\""), vec!["l"]);
+    assert_eq!(run("put character 2 of \"héllo\""), vec!["é"]);
+    let script = "put \"one\" & return & \"two\" & return & \"three\" into x\nput line 2 of x";
+    assert_eq!(run(script), vec!["two"]);
+}
+
+#[test]
+fn ordinals() {
+    assert_eq!(run("put the first word of \"alpha beta gamma\""), vec!["alpha"]);
+    assert_eq!(run("put last word of \"alpha beta gamma\""), vec!["gamma"]);
+    assert_eq!(run("put the third item of \"a,b,c,d\""), vec!["c"]);
+    assert_eq!(run("put the middle word of \"a b c d e\""), vec!["c"]);
+    assert_eq!(run("put the middle word of \"a b c d\""), vec!["c"]);
+    assert_eq!(run("put mid item of \"a,b,c\""), vec!["b"]);
+}
+
+#[test]
+fn ranges() {
+    assert_eq!(run("put word 2 to 3 of \"a b c d\""), vec!["b c"]);
+    assert_eq!(run("put item 2 to 3 of \"a,b,c,d\""), vec!["b,c"]);
+    assert_eq!(run("put char 2 to 4 of \"hello\""), vec!["ell"]);
+    assert_eq!(run("put word 3 to 9 of \"a b c d\""), vec!["c d"]);
+}
+
+#[test]
+fn out_of_range_reads_are_empty() {
+    assert_eq!(run("put word 9 of \"a b\""), vec![""]);
+    assert_eq!(run("put word 0 of \"a b\""), vec![""]);
+    assert_eq!(run("put word 5 to 9 of \"a b c d\""), vec![""]);
+    assert_eq!(run("put word 3 to 2 of \"a b c d\""), vec![""]);
+}
+
+#[test]
+fn nested_chunks() {
+    let script = r#"
+put "a b c" & return & "d e f g" into x
+put word 3 of line 2 of x
+put the last word of the first line of x
+"#;
+    assert_eq!(run(script), vec!["f", "c"]);
+}
+
+#[test]
+fn of_in_and_from_are_interchangeable() {
+    assert_eq!(run("put word 2 in \"a b c\""), vec!["b"]);
+    assert_eq!(run("put word 2 from \"a b c\""), vec!["b"]);
+}
+
+#[test]
+fn an_index_can_be_an_expression() {
+    assert_eq!(run("put 1 into i\nput word i + 1 of \"a b c\""), vec!["b"]);
+}
+
+#[test]
+fn a_chunk_binds_to_the_nearest_operand() {
+    assert_eq!(run("put first word of \"a b\" & \"!\""), vec!["a!"]);
+}
+
+#[test]
+fn counting_chunks() {
+    assert_eq!(run("put the number of words in \"a b c\""), vec!["3"]);
+    assert_eq!(run("put number of items in \"a,b,,d\""), vec!["4"]);
+    assert_eq!(run("put the number of chars in \"héllo\""), vec!["5"]);
+    assert_eq!(run("put the number of words in \"\""), vec!["0"]);
+    let script = "put \"a\" & return & \"b\" into s\nput the number of lines in s";
+    assert_eq!(run(script), vec!["2"]);
+}
+
+#[test]
+fn chunk_words_are_still_ordinary_variable_names() {
+    assert_eq!(run("put 5 into word\nput word"), vec!["5"]);
+    assert_eq!(run("put 7 into word\nput word into line\nput line"), vec!["7"]);
+    assert_eq!(run("put 3 into first\nput first"), vec!["3"]);
+}
+
+#[test]
+fn a_line_can_start_with_a_chunk_expression() {
+    assert_eq!(run("word 2 of \"a b c\""), vec!["b"]);
+    assert_eq!(run("the first word of \"x y\""), vec!["x"]);
+}
+
+#[test]
+fn a_chunk_can_be_stored() {
+    assert_eq!(run("put word 2 of \"a b c\" into y\nput y"), vec!["b"]);
+}
+
+#[test]
+fn any_picks_one_of_the_chunks() {
+    assert_eq!(run("put any word of \"a a a\""), vec!["a"]);
+    let out = run("put any item of \"x,y\"");
+    assert!(out == vec!["x"] || out == vec!["y"]);
+}
+
+#[test]
+fn item_delimiter() {
+    assert_eq!(run("put the itemDelimiter"), vec![","]);
+    assert_eq!(
+        run("set the itemDelimiter to \";\"\nput item 2 of \"a;b;c\""),
+        vec!["b"]
+    );
+    assert_eq!(
+        run("set the itemDelimiter to \"::\"\nput item 2 of \"a::b::c\""),
+        vec!["b"]
+    );
+    assert!(run_err("set the itemDelimiter to \"\"").message.contains("empty"));
+    assert!(run_err("set the colour to 1").message.contains("itemDelimiter"));
+}
+
+#[test]
+fn putting_into_chunks() {
+    let base = "put \"a b c\" into s\n";
+    assert_eq!(run(&format!("{base}put \"X\" into word 2 of s\nput s")), vec!["a X c"]);
+    assert_eq!(run(&format!("{base}put \"X\" before word 2 of s\nput s")), vec!["a Xb c"]);
+    assert_eq!(run(&format!("{base}put \"X\" after word 2 of s\nput s")), vec!["a bX c"]);
+    assert_eq!(run(&format!("{base}put \"Z\" into last word of s\nput s")), vec!["a b Z"]);
+    assert_eq!(
+        run("put \"abc\" into s\nput \"X\" into char 2 of s\nput s"),
+        vec!["aXc"]
+    );
+    assert_eq!(
+        run("put \"a b c d\" into s\nput \"X\" into word 2 to 3 of s\nput s"),
+        vec!["a X d"]
+    );
+}
+
+#[test]
+fn putting_into_a_chunk_of_a_chunk() {
+    let script = r#"
+put "one two" & return & "three four" into s
+put "X" into word 2 of line 2 of s
+put line 1 of s
+put line 2 of s
+"#;
+    assert_eq!(run(script), vec!["one two", "three X"]);
+}
+
+#[test]
+fn items_and_lines_grow_but_words_do_not() {
+    assert_eq!(
+        run("put \"a,b\" into s\nput \"z\" into item 4 of s\nput s"),
+        vec!["a,b,,z"]
+    );
+    assert_eq!(run("put \"x\" into item 3 of fresh\nput fresh"), vec![",,x"]);
+    assert_eq!(
+        run("put \"a\" into s\nput \"z\" into line 3 of s\nput s"),
+        vec!["a\n\nz"]
+    );
+    let err = run_err("put \"a b\" into s\nput \"x\" into word 5 of s");
+    assert!(err.message.contains("does not exist"));
+}
+
+#[test]
+fn you_can_only_put_into_a_variable_or_a_chunk_of_one() {
+    assert!(run_err("put 1 into \"abc\"").message.contains("variable"));
+}
+
+#[test]
+fn looping_over_words() {
+    let script = r#"
+put "red green blue" into colors
+repeat with i = 1 to the number of words in colors
+  put word i of colors
+end repeat
+"#;
+    assert_eq!(run(script), vec!["red", "green", "blue"]);
+}

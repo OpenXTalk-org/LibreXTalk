@@ -35,6 +35,9 @@ fn print_help() {
     println!("    put \"Hello,\" && name");
     println!("  end greet");
     println!("  greet \"World\"");
+    println!("  put word 2 of \"alpha beta gamma\"");
+    println!("  put the number of words in \"alpha beta gamma\"");
+    println!("  put \"X\" into word 2 of s");
     println!();
     println!("A block (if, repeat, on, function) can span several lines.");
     println!("The prompt shows ... until the block is finished.");
@@ -96,7 +99,7 @@ fn show_ast(source: &str) {
 }
 
 fn repl() {
-    println!("xt 0.0.2. Type :help for help, :quit to leave.");
+    println!("xt 0.0.3. Type :help for help, :quit to leave.");
 
     let mut interp = Interpreter::new();
     let mut host = StdoutHost;

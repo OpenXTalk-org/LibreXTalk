@@ -13,8 +13,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::ast::{BinOp, WaitUnit};
-use crate::compile::{compile_handler, Handler, Op};
+use crate::ast::{BinOp, ChunkKind, WaitUnit};
+use crate::chunk::{self, Selector};
+use crate::compile::{compile_handler, Handler, Op, SelShape};
 use crate::error::XtError;
 use crate::parser::parse_script;
 
@@ -92,6 +93,10 @@ pub struct Interpreter {
     frames: Vec<Frame>,
     /// `the result`
     result: String,
+    /// `the itemDelimiter`
+    item_delimiter: String,
+    /// State for `any`, a simple xorshift generator.
+    rng: u64,
 }
 
 impl Default for Interpreter {
@@ -108,6 +113,8 @@ impl Interpreter {
             main_locals: HashMap::new(),
             frames: Vec::new(),
             result: String::new(),
+            item_delimiter: ",".to_string(),
+            rng: seed(),
         }
     }
 
@@ -199,13 +206,63 @@ impl Interpreter {
                 let v = self.read_var(&name);
                 self.push(v);
             }
-            Op::The(name) => {
-                if name.eq_ignore_ascii_case("result") {
+            Op::The(name) => match name.to_lowercase().as_str() {
+                "result" => {
                     let v = self.result.clone();
                     self.push(v);
-                } else {
-                    return Err(XtError::new(format!("Unknown property 'the {name}'")));
                 }
+                "itemdelimiter" => {
+                    let v = self.item_delimiter.clone();
+                    self.push(v);
+                }
+                _ => return Err(XtError::new(format!("Unknown property 'the {name}'"))),
+            },
+            Op::SetProp(name) => {
+                let v = self.pop()?;
+                if name == "itemdelimiter" {
+                    if v.is_empty() {
+                        return Err(XtError::new("The itemDelimiter can't be empty"));
+                    }
+                    self.item_delimiter = v;
+                } else {
+                    return Err(XtError::new(format!(
+                        "Can't set 'the {name}': only the itemDelimiter can be set so far"
+                    )));
+                }
+            }
+            Op::Chunk { kind, shape } => {
+                let selector = self.pop_selector(shape)?;
+                let text = self.pop()?;
+                let rand = self.next_random();
+                let out = chunk::read(&text, kind, &self.item_delimiter, &selector, rand);
+                self.push(out);
+            }
+            Op::Count(kind) => {
+                let text = self.pop()?;
+                let n = chunk::count(&text, kind, &self.item_delimiter);
+                self.push(n.to_string());
+            }
+            Op::PutChunk {
+                name,
+                steps,
+                placement,
+            } => {
+                // The last step's operands are on top of the stack.
+                let mut selectors = Vec::with_capacity(steps.len());
+                for (_, shape) in steps.iter().rev() {
+                    selectors.push(self.pop_selector(*shape)?);
+                }
+                selectors.reverse();
+                let value = self.pop()?;
+                let base = self.stored(&name);
+                let rand = self.next_random();
+                let path: Vec<(ChunkKind, Selector)> = steps
+                    .iter()
+                    .map(|(kind, _)| *kind)
+                    .zip(selectors)
+                    .collect();
+                let updated = chunk::put(&base, &path, placement, &value, &self.item_delimiter, rand)?;
+                self.write_var(&name, updated);
             }
             Op::Store(name) => {
                 let v = self.pop()?;
@@ -288,6 +345,31 @@ impl Interpreter {
             .stack
             .pop()
             .ok_or_else(|| XtError::new("Internal error: the value stack is empty"))
+    }
+
+    /// Pop the operands a selector needs and build it.
+    fn pop_selector(&mut self, shape: SelShape) -> Result<Selector, XtError> {
+        Ok(match shape {
+            SelShape::Ordinal(o) => Selector::Ordinal(o),
+            SelShape::At => {
+                let i = to_index(&self.pop()?)?;
+                Selector::Index(i)
+            }
+            SelShape::Range => {
+                let last = to_index(&self.pop()?)?;
+                let first = to_index(&self.pop()?)?;
+                Selector::Range(first, last)
+            }
+        })
+    }
+
+    fn next_random(&mut self) -> u64 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        x
     }
 
     fn call(&mut self, name: &str, argc: usize, wants_value: bool) -> Result<(), XtError> {
@@ -412,6 +494,20 @@ fn parse_num(s: &str) -> Option<f64> {
 /// A string is numeric if it parses as a finite number (spec VAL-2).
 fn to_number(s: &str) -> Result<f64, XtError> {
     parse_num(s).ok_or_else(|| XtError::new(format!("Expected a number but found \"{s}\"")))
+}
+
+/// A chunk index: a number with any fraction dropped.
+fn to_index(s: &str) -> Result<i64, XtError> {
+    Ok(to_number(s)?.trunc() as i64)
+}
+
+/// A nonzero starting value for the random number generator.
+fn seed() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x2545_F491_4F6C_DD1D);
+    nanos | 1
 }
 
 fn to_bool(s: &str) -> Result<bool, XtError> {
