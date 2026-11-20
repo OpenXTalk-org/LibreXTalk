@@ -1,0 +1,15 @@
+-- Handlers, a function, a loop, and a wait
+on countdown n
+  repeat with i = n down to 1
+    put i
+    wait 1 second
+  end repeat
+  put "Liftoff!"
+end countdown
+
+function double n
+  return n * 2
+end double
+
+countdown 3
+put "Twice 21 is" && double(21)
