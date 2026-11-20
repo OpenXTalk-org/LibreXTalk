@@ -1,0 +1,15 @@
+-- Chunk expressions
+put "red green blue" into colors
+put "First color:" && first word of colors
+put "Last color:" && the last word of colors
+put "How many:" && the number of words in colors
+
+put "X" into word 2 of colors
+put colors
+
+repeat with i = 1 to the number of words in colors
+  put i & ":" && word i of colors
+end repeat
+
+set the itemDelimiter to ";"
+put item 2 of "a;b;c"
