@@ -1,4 +1,3 @@
-
 //! `xt`: run xTalk scripts, or type them at a prompt.
 //!
 //!     xt                 start the prompt
@@ -114,6 +113,7 @@ fn print_help() {
     println!("    put \"Caught:\" && e");
     println!("  end try");
     println!();
+    println!("Separate statements on one line with a semicolon: put 1; put 2");
     println!("A block (if, repeat, on, function) can span several lines.");
     println!("The prompt shows ... until the block is finished.");
     println!();

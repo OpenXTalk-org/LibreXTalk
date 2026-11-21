@@ -4,6 +4,7 @@
 //! has no reserved words (spec LEX-4). The parser decides what a word means.
 //! Each line ends with a `Newline` token, because a newline ends a statement
 //! (spec LEX-8), unless the line ends with the continuation character `¬`.
+//! A semicolon outside a string or comment also ends a statement.
 
 use crate::error::XtError;
 
@@ -111,6 +112,11 @@ fn lex_line(chars: &[char], line: usize, tokens: &mut Vec<Token>) -> Result<bool
             }
             let text: String = chars[start..i].iter().collect();
             push(tokens, TokenKind::Word(text), line, start, i);
+        } else if c == ';' {
+            // A semicolon ends a statement, just as a newline does, so
+            // `put 1; put 2` is two statements (spec LEX-8).
+            push(tokens, TokenKind::Newline, line, start, start + 1);
+            i += 1;
         } else if let Some(op) = two_char_op(c, next) {
             push(tokens, TokenKind::Op(op.to_string()), line, start, start + 2);
             i += 2;

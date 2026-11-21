@@ -894,3 +894,47 @@ fn cancelling_ask_sets_the_result() {
         .unwrap();
     assert_eq!(host.out, vec!["/Cancel"]);
 }
+
+// ----- semicolons ------------------------------------------------------------
+
+#[test]
+fn a_semicolon_separates_statements() {
+    assert_eq!(run("put \"a\"; put \"b\""), vec!["a", "b"]);
+    assert_eq!(run("put 1 into x; put x + 1"), vec!["2"]);
+    assert_eq!(run("put \"a\";; put \"b\";"), vec!["a", "b"]);
+}
+
+#[test]
+fn a_semicolon_inside_a_string_or_comment_is_not_a_separator() {
+    assert_eq!(run("put \"a;b\""), vec!["a;b"]);
+    assert_eq!(run("put \"a\" -- note; put \"b\""), vec!["a"]);
+    assert_eq!(
+        run("set the itemDelimiter to \";\"; put item 2 of \"a;b;c\""),
+        vec!["b"]
+    );
+}
+
+#[test]
+fn blocks_and_handlers_fit_on_one_line() {
+    assert_eq!(
+        run("repeat 3 times; put \"hi\"; end repeat"),
+        vec!["hi", "hi", "hi"]
+    );
+    assert_eq!(run("on greet; put \"hi\"; end greet; greet"), vec!["hi"]);
+    assert_eq!(
+        run("if 1 = 1 then; put \"yes\"; else; put \"no\"; end if"),
+        vec!["yes"]
+    );
+    assert_eq!(
+        run("repeat with i = 1 to 3; put i; end repeat"),
+        vec!["1", "2", "3"]
+    );
+}
+
+#[test]
+fn errors_after_a_semicolon_point_at_the_right_place() {
+    let err = run_err("put 1; put");
+    assert_eq!((err.line, err.col), (Some(0), Some(10)));
+    let err = run_err("put 1; put 1 / 0");
+    assert_eq!(err.line, Some(0));
+}
