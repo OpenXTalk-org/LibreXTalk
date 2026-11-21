@@ -1,0 +1,19 @@
+-- Built-in functions, arithmetic commands, delete, and try/catch
+put "Length of hello:" && length("hello")
+put "Rounded:" && round(2.5)
+put "Biggest:" && max(3, 9, 4)
+
+put 10 into total
+add 5 to total
+multiply total by 2
+put "Total:" && total
+
+put "a,b,c,d" into list
+delete item 2 of list
+put list
+
+try
+  put 1 / 0
+catch problem
+  put "Caught:" && problem
+end try

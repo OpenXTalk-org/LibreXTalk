@@ -6,6 +6,7 @@
 //! context (spec section 4).
 
 use crate::ast::*;
+use crate::builtins;
 use crate::error::XtError;
 use crate::lexer::{lex, Token, TokenKind};
 
@@ -294,7 +295,7 @@ impl Parser {
             if self.at_end() {
                 return Err(self.incomplete("This block is missing its 'end' line"));
             }
-            if self.is_word("end") || self.is_word("else") {
+            if self.is_word("end") || self.is_word("else") || self.is_word("catch") {
                 break;
             }
             stmts.push(self.parse_statement()?);
@@ -307,9 +308,35 @@ impl Parser {
     /// Parse one statement, including the end of its line.
     fn parse_statement(&mut self) -> Result<Stmt, XtError> {
         let line = self.current_line();
-        if self.is_word("end") || self.is_word("else") {
+        if self.is_word("end") || self.is_word("else") || self.is_word("catch") {
             let w = self.word_at(0).unwrap_or("").to_string();
             return Err(self.err_here(format!("Unexpected '{w}' here")));
+        }
+        if self.is_word("try") {
+            self.pos += 1;
+            self.expect_line_end()?;
+            let body = self.parse_block()?;
+            if !self.is_word("catch") {
+                return Err(self.err_here("Expected 'catch' here"));
+            }
+            self.pos += 1;
+            let var = if self.is_line_end() {
+                None
+            } else {
+                Some(self.take_word()?)
+            };
+            self.expect_line_end()?;
+            let catch_body = self.parse_block()?;
+            self.expect_end_word("try")?;
+            self.expect_line_end()?;
+            return Ok(Stmt {
+                line,
+                kind: StmtKind::Try {
+                    body,
+                    var,
+                    catch_body,
+                },
+            });
         }
         if self.is_word("if") {
             self.pos += 1;
@@ -406,8 +433,8 @@ impl Parser {
             }
             return Ok(kind);
         }
-        if self.is_word("repeat") {
-            return Err(self.err_here("A 'repeat' loop needs its own lines"));
+        if self.is_word("repeat") || self.is_word("try") {
+            return Err(self.err_here("A 'repeat' or 'try' block needs its own lines"));
         }
         self.parse_simple()
     }
@@ -573,6 +600,83 @@ impl Parser {
                     Ok(StmtKind::Wait(WaitKind::For(amount, unit)))
                 }
             }
+            "add" => {
+                self.pos += 1;
+                let operand = self.parse_expr()?;
+                if !self.is_word("to") {
+                    return Err(self.err_here("Expected 'to' here"));
+                }
+                self.pos += 1;
+                let (target, _, _) = self.parse_container()?;
+                Ok(arithmetic_put(target, BinOp::Add, operand))
+            }
+            "subtract" => {
+                self.pos += 1;
+                let operand = self.parse_expr()?;
+                if !self.is_word("from") {
+                    return Err(self.err_here("Expected 'from' here"));
+                }
+                self.pos += 1;
+                let (target, _, _) = self.parse_container()?;
+                Ok(arithmetic_put(target, BinOp::Sub, operand))
+            }
+            "multiply" | "divide" => {
+                self.pos += 1;
+                let (target, _, _) = self.parse_container()?;
+                if !self.is_word("by") {
+                    return Err(self.err_here("Expected 'by' here"));
+                }
+                self.pos += 1;
+                let operand = self.parse_expr()?;
+                let op = if word == "multiply" { BinOp::Mul } else { BinOp::Div };
+                Ok(arithmetic_put(target, op, operand))
+            }
+            "delete" => {
+                self.pos += 1;
+                let (target, line, col) = self.parse_container()?;
+                if matches!(target, Target::Chunk { .. }) {
+                    Ok(StmtKind::Delete(target))
+                } else {
+                    Err(XtError::at(
+                        line,
+                        col,
+                        "delete needs a chunk, such as: delete word 2 of x",
+                    ))
+                }
+            }
+            "throw" => {
+                self.pos += 1;
+                Ok(StmtKind::Throw(self.parse_expr()?))
+            }
+            "answer" => {
+                self.pos += 1;
+                let prompt = self.parse_expr()?;
+                let mut buttons = Vec::new();
+                if self.is_word("with") {
+                    self.pos += 1;
+                    loop {
+                        // Level 2 skips `or`, which separates the buttons here.
+                        buttons.push(self.parse_binary(2)?);
+                        if self.is_word("or") {
+                            self.pos += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Ok(StmtKind::Answer { prompt, buttons })
+            }
+            "ask" => {
+                self.pos += 1;
+                let prompt = self.parse_expr()?;
+                let default = if self.is_word("with") {
+                    self.pos += 1;
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                Ok(StmtKind::Ask { prompt, default })
+            }
             "set" => {
                 self.pos += 1;
                 if !self.is_word("the") {
@@ -591,6 +695,27 @@ impl Parser {
                 Ok(StmtKind::Set { prop, value })
             }
             _ => self.parse_call_or_eval(),
+        }
+    }
+
+    /// A variable or a chunk of one, as used by `add`, `multiply`, and `delete`.
+    /// Also returns the position, for error messages.
+    fn parse_container(&mut self) -> Result<(Target, usize, usize), XtError> {
+        if self.is_line_end() {
+            return Err(self.err_here("Expected a variable or a chunk of one here"));
+        }
+        let (line, col) = {
+            let t = &self.tokens[self.pos];
+            (t.line, t.col)
+        };
+        let expr = self.parse_primary()?;
+        match expr_to_target(expr) {
+            Some(target) => Ok((target, line, col)),
+            None => Err(XtError::at(
+                line,
+                col,
+                "Expected a variable or a chunk of one here",
+            )),
         }
     }
 
@@ -900,8 +1025,27 @@ impl Parser {
             self.pos += 1;
             return Ok(Expr::The(name));
         }
+        if builtins::is_builtin(&name) {
+            // `the length of x`
+            if self.is_word_at(1, "of") {
+                self.pos += 2;
+                let arg = self.parse_primary()?;
+                return Ok(Expr::Call {
+                    name,
+                    args: vec![arg],
+                });
+            }
+            // `the seconds`
+            if builtins::takes_no_args(&name) {
+                self.pos += 1;
+                return Ok(Expr::Call {
+                    name,
+                    args: Vec::new(),
+                });
+            }
+        }
         Err(self.err_here(format!(
-            "'the {name}' is not supported yet. Try the result, the itemDelimiter, or the number of words, items, lines, or chars in ..."
+            "'the {name}' is not supported yet. Try the result, the itemDelimiter, the number of words, items, lines, or chars in ..., or a built-in function such as the length of ..."
         )))
     }
 }
@@ -956,5 +1100,30 @@ fn expr_to_target(e: Expr) -> Option<Target> {
             of: Box::new(expr_to_target(*of)?),
         }),
         _ => None,
+    }
+}
+
+/// A container as an expression, for reading its current value.
+fn target_to_expr(target: &Target) -> Expr {
+    match target {
+        Target::Var(name) => Expr::Var(name.clone()),
+        Target::Chunk { kind, sel, of } => Expr::Chunk {
+            kind: *kind,
+            sel: sel.clone(),
+            of: Box::new(target_to_expr(of)),
+        },
+    }
+}
+
+/// `add 5 to x` is `put x + 5 into x`, and likewise for the other operators.
+fn arithmetic_put(target: Target, op: BinOp, operand: Expr) -> StmtKind {
+    let current = target_to_expr(&target);
+    StmtKind::Put {
+        value: Expr::Binary {
+            op,
+            left: Box::new(current),
+            right: Box::new(operand),
+        },
+        target: Some((Placement::Into, target)),
     }
 }

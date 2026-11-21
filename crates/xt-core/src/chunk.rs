@@ -207,3 +207,64 @@ pub fn put(
     let updated = put(&text[start..end], rest, placement, value, delim, rand)?;
     Ok(format!("{}{}{}", &text[..start], updated, &text[end..]))
 }
+
+/// The byte range that deleting this chunk removes: the chunk itself plus
+/// one delimiter. That is the delimiter after it, or the one before it when
+/// it is the last chunk. Characters have no delimiter.
+fn removal_range(
+    text: &str,
+    kind: ChunkKind,
+    delim: &str,
+    sel: &Selector,
+    rand: u64,
+) -> Option<(usize, usize)> {
+    let sp = spans(text, kind, delim);
+    let n = sp.len() as i64;
+    let (a, b) = resolve(sel, sp.len(), rand);
+    let a = a.max(1);
+    let b = b.min(n);
+    if a > b {
+        return None;
+    }
+    let (a, b) = (a as usize, b as usize); // 1-based and inclusive
+    let (start, end) = (sp[a - 1].0, sp[b - 1].1);
+    if kind == ChunkKind::Char {
+        Some((start, end))
+    } else if b < sp.len() {
+        Some((start, sp[b].0))
+    } else if a > 1 {
+        Some((sp[a - 2].1, end))
+    } else {
+        Some((start, end))
+    }
+}
+
+/// Delete the chunk named by `path` from `base`. A chunk that does not exist
+/// is ignored. The path starts with the chunk nearest the variable.
+pub fn delete(
+    base: &str,
+    path: &[(ChunkKind, Selector)],
+    delim: &str,
+    rand: u64,
+) -> String {
+    let Some((first, rest)) = path.split_first() else {
+        return base.to_string();
+    };
+    let (kind, sel) = first;
+    if rest.is_empty() {
+        return match removal_range(base, *kind, delim, sel, rand) {
+            Some((s, e)) => format!("{}{}", &base[..s], &base[e..]),
+            None => base.to_string(),
+        };
+    }
+    // A chunk of a chunk: find the outer piece, delete inside it, put it back.
+    let sp = spans(base, *kind, delim);
+    let (a, b) = resolve(sel, sp.len(), rand);
+    if a >= 1 && b >= a && (b as usize) <= sp.len() {
+        let start = sp[(a - 1) as usize].0;
+        let end = sp[(b - 1) as usize].1;
+        let inner = delete(&base[start..end], rest, delim, rand);
+        return format!("{}{}{}", &base[..start], inner, &base[end..]);
+    }
+    base.to_string()
+}

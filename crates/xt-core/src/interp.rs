@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::ast::{BinOp, ChunkKind, WaitUnit};
+use crate::builtins;
 use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, Op, SelShape};
 use crate::error::XtError;
@@ -34,6 +35,18 @@ pub trait Host {
     /// `Interpreter::run` again instead of blocking.
     fn sleep(&mut self, duration: Duration) {
         std::thread::sleep(duration);
+    }
+
+    /// Show a dialog with buttons and return the index of the chosen one.
+    /// The default picks the first button, which suits a headless host.
+    fn answer(&mut self, _prompt: &str, _buttons: &[String]) -> usize {
+        0
+    }
+
+    /// Ask for a line of text. `None` means the person cancelled.
+    /// The default accepts the suggested text.
+    fn ask(&mut self, _prompt: &str, default: &str) -> Option<String> {
+        Some(default.to_string())
     }
 }
 
@@ -63,6 +76,20 @@ struct Frame {
     wants_value: bool,
     /// True for the frame that runs loose statements.
     is_main: bool,
+    /// The arguments this handler was called with, for `param(n)`.
+    args: Vec<String>,
+    /// Open `try` blocks, innermost last.
+    tries: Vec<TryEntry>,
+}
+
+/// An open `try` block.
+struct TryEntry {
+    /// Where the catch block starts.
+    catch_at: usize,
+    /// How tall the value stack was, so it can be cut back after an error.
+    depth: usize,
+    /// The variable that receives the error message, or empty.
+    var: String,
 }
 
 impl Frame {
@@ -80,6 +107,8 @@ impl Frame {
             stack: Vec::new(),
             wants_value,
             is_main,
+            args: Vec::new(),
+            tries: Vec::new(),
         }
     }
 }
@@ -194,7 +223,12 @@ impl Interpreter {
             match self.step(op, host) {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Sleep(duration)) => return Ok(Status::Sleeping(duration)),
-                Err(err) => return Err(err.with_line(line)),
+                Err(err) => {
+                    if self.try_catch(&err) {
+                        continue;
+                    }
+                    return Err(err.with_line(line));
+                }
             }
         }
     }
@@ -283,6 +317,70 @@ impl Interpreter {
                 self.frame_mut().globals.insert(key.clone());
                 self.globals.entry(key).or_default();
             }
+            Op::DeleteChunk { name, steps } => {
+                let mut selectors = Vec::with_capacity(steps.len());
+                for (_, shape) in steps.iter().rev() {
+                    selectors.push(self.pop_selector(*shape)?);
+                }
+                selectors.reverse();
+                let base = self.stored(&name);
+                let rand = self.next_random();
+                let path: Vec<(ChunkKind, Selector)> = steps
+                    .iter()
+                    .map(|(kind, _)| *kind)
+                    .zip(selectors)
+                    .collect();
+                let updated = chunk::delete(&base, &path, &self.item_delimiter, rand);
+                self.write_var(&name, updated);
+            }
+            Op::TryBegin { catch_at, var } => {
+                let frame = self.frame_mut();
+                let depth = frame.stack.len();
+                frame.tries.push(TryEntry {
+                    catch_at,
+                    depth,
+                    var,
+                });
+            }
+            Op::TryEnd => {
+                self.frame_mut().tries.pop();
+            }
+            Op::Throw => {
+                let message = self.pop()?;
+                return Err(XtError::new(message));
+            }
+            Op::Answer { buttons } => {
+                let mut labels = Vec::with_capacity(buttons);
+                for _ in 0..buttons {
+                    labels.push(self.pop()?);
+                }
+                labels.reverse();
+                let prompt = self.pop()?;
+                if labels.is_empty() {
+                    labels.push("OK".to_string());
+                }
+                let choice = host.answer(&prompt, &labels).min(labels.len() - 1);
+                let picked = labels[choice].clone();
+                self.write_var("it", picked);
+            }
+            Op::Ask { has_default } => {
+                let default = if has_default {
+                    self.pop()?
+                } else {
+                    String::new()
+                };
+                let prompt = self.pop()?;
+                match host.ask(&prompt, &default) {
+                    Some(reply) => {
+                        self.write_var("it", reply);
+                        self.result = String::new();
+                    }
+                    None => {
+                        self.write_var("it", String::new());
+                        self.result = "Cancel".to_string();
+                    }
+                }
+            }
             Op::Neg => {
                 let v = self.pop()?;
                 let n = to_number(&v)?;
@@ -347,6 +445,27 @@ impl Interpreter {
             .ok_or_else(|| XtError::new("Internal error: the value stack is empty"))
     }
 
+    /// Find the innermost open `try`, anywhere on the stack of handlers. If
+    /// there is one, unwind to it, store the message, and jump to its catch
+    /// block. Returns false if no `try` is open.
+    fn try_catch(&mut self, err: &XtError) -> bool {
+        let Some(index) = self.frames.iter().rposition(|f| !f.tries.is_empty()) else {
+            return false;
+        };
+        self.frames.truncate(index + 1);
+        let entry = match self.frames[index].tries.pop() {
+            Some(entry) => entry,
+            None => return false,
+        };
+        let frame = &mut self.frames[index];
+        frame.stack.truncate(entry.depth);
+        frame.pc = entry.catch_at;
+        if !entry.var.is_empty() {
+            self.write_var(&entry.var, err.message.clone());
+        }
+        true
+    }
+
     /// Pop the operands a selector needs and build it.
     fn pop_selector(&mut self, shape: SelShape) -> Result<Selector, XtError> {
         Ok(match shape {
@@ -379,9 +498,28 @@ impl Interpreter {
         }
         args.reverse();
 
-        let handler = match self.handlers.get(&name.to_lowercase()) {
-            Some(h) => Rc::clone(h),
-            None => return Err(XtError::new(format!("Can't understand \"{name}\""))),
+        let found = self.handlers.get(&name.to_lowercase()).cloned();
+        let handler = match found {
+            Some(h) => h,
+            None => {
+                // No handler of that name: try the built-in functions.
+                if wants_value && builtins::is_builtin(name) {
+                    let rand = self.next_random();
+                    let (handler_name, handler_args) = match self.frames.last() {
+                        Some(f) => (f.handler.name.clone(), f.args.clone()),
+                        None => (String::new(), Vec::new()),
+                    };
+                    let ctx = builtins::CallContext {
+                        handler_name: &handler_name,
+                        args: &handler_args,
+                        rand,
+                    };
+                    let value = builtins::call(name, &args, &ctx)?;
+                    self.push(value);
+                    return Ok(());
+                }
+                return Err(XtError::new(format!("Can't understand \"{name}\"")));
+            }
         };
         if self.frames.len() >= MAX_DEPTH {
             return Err(XtError::new(format!(
@@ -391,6 +529,7 @@ impl Interpreter {
         }
 
         let mut frame = Frame::new(Rc::clone(&handler), false, wants_value, HashMap::new());
+        frame.args = args.clone();
         // Missing arguments are empty and extra ones are ignored (spec HND-4).
         for (i, param) in handler.params.iter().enumerate() {
             frame
@@ -492,7 +631,7 @@ fn parse_num(s: &str) -> Option<f64> {
 }
 
 /// A string is numeric if it parses as a finite number (spec VAL-2).
-fn to_number(s: &str) -> Result<f64, XtError> {
+pub(crate) fn to_number(s: &str) -> Result<f64, XtError> {
     parse_num(s).ok_or_else(|| XtError::new(format!("Expected a number but found \"{s}\"")))
 }
 

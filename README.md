@@ -1,4 +1,4 @@
-# xtalk-rs, step 3: chunk expressions
+# xtalk-rs, step 5: built-ins, arithmetic commands, delete, try/catch, dialogs
 
 A small headless xTalk interpreter, with a command prompt.
 
@@ -6,7 +6,7 @@ A small headless xTalk interpreter, with a command prompt.
     cargo run -p xt-cli -- run examples/countdown.xt
     cargo test
 
-Inside the prompt, type `:help`.
+Inside the prompt, type `:help`. The up and down arrows recall earlier lines (kept in `~/.xt_history`).
 
 ## Layout
 
@@ -14,6 +14,7 @@ Inside the prompt, type `:help`.
   - `lexer.rs`: text to tokens (no keywords, newlines are tokens)
   - `parser.rs`: tokens to a syntax tree
   - `compile.rs`: syntax tree to bytecode
+  - `builtins.rs`: built-in functions (numbers, text, time, parameters)
   - `chunk.rs`: finding and replacing characters, words, items, and lines
   - `interp.rs`: the virtual machine, with its own call stack
   - `tests.rs`: whole-script tests

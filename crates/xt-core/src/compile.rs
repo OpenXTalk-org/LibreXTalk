@@ -58,6 +58,24 @@ pub enum Op {
     },
     /// Pop a value and set a global property.
     SetProp(String),
+    /// Delete a chunk of a variable. The operands are those of `PutChunk`,
+    /// without the value.
+    DeleteChunk {
+        name: String,
+        steps: Vec<(ChunkKind, SelShape)>,
+    },
+    /// Start a try block. If an error happens, jump to `catch_at` and store
+    /// the error message in `var` (unless it is empty).
+    TryBegin { catch_at: usize, var: String },
+    /// The try block finished without an error.
+    TryEnd,
+    /// Pop a value and raise it as an error.
+    Throw,
+    /// Pop `buttons` labels and a prompt, ask the host, and store the choice in `it`.
+    Answer { buttons: usize },
+    /// Pop a default (if there is one) and a prompt, ask the host for text,
+    /// and store the reply in `it`.
+    Ask { has_default: bool },
 }
 
 /// How a chunk is selected, and so how many operands it takes from the stack.
@@ -87,6 +105,7 @@ pub fn compile_handler(name: &str, params: &[String], body: &[Stmt]) -> Handler 
         line: 0,
         loops: Vec::new(),
         next_hidden: 0,
+        try_depth: 0,
     };
     c.stmts(body);
     c.emit(Op::Push(String::new()));
@@ -105,6 +124,8 @@ struct LoopCtx {
     exits: Vec<usize>,
     /// Jumps from `next repeat`, patched to the loop's next-iteration point.
     continues: Vec<usize>,
+    /// How many `try` blocks were open when the loop began.
+    try_depth: usize,
 }
 
 struct Compiler {
@@ -113,6 +134,8 @@ struct Compiler {
     line: usize,
     loops: Vec<LoopCtx>,
     next_hidden: usize,
+    /// How many `try` blocks we are inside right now.
+    try_depth: usize,
 }
 
 impl Compiler {
@@ -129,6 +152,7 @@ impl Compiler {
     fn patch(&mut self, at: usize, target: usize) {
         match &mut self.code[at] {
             Op::Jump(t) | Op::JumpIfFalse(t) => *t = target,
+            Op::TryBegin { catch_at, .. } => *catch_at = target,
             _ => {}
         }
     }
@@ -219,12 +243,14 @@ impl Compiler {
                 self.emit(Op::ExitToTop);
             }
             StmtKind::Exit(ExitKind::Repeat) => {
+                self.leave_tries();
                 let at = self.emit(Op::Jump(0));
                 if let Some(ctx) = self.loops.last_mut() {
                     ctx.exits.push(at);
                 }
             }
             StmtKind::NextRepeat => {
+                self.leave_tries();
                 let at = self.emit(Op::Jump(0));
                 if let Some(ctx) = self.loops.last_mut() {
                     ctx.continues.push(at);
@@ -239,37 +265,67 @@ impl Compiler {
                 self.expr(value);
                 self.emit(Op::SetProp(prop.clone()));
             }
+            StmtKind::Delete(target) => {
+                let (name, steps) = flatten_target(target);
+                let shapes = self.chunk_operands(&steps);
+                self.emit(Op::DeleteChunk {
+                    name,
+                    steps: shapes,
+                });
+            }
+            StmtKind::Try {
+                body,
+                var,
+                catch_body,
+            } => {
+                let begin = self.emit(Op::TryBegin {
+                    catch_at: 0,
+                    var: var.clone().unwrap_or_default(),
+                });
+                self.try_depth += 1;
+                self.stmts(body);
+                self.try_depth -= 1;
+                self.emit(Op::TryEnd);
+                let skip = self.emit(Op::Jump(0));
+                let catch_start = self.here();
+                self.patch(begin, catch_start);
+                self.stmts(catch_body);
+                let end = self.here();
+                self.patch(skip, end);
+            }
+            StmtKind::Throw(e) => {
+                self.expr(e);
+                self.emit(Op::Throw);
+            }
+            StmtKind::Answer { prompt, buttons } => {
+                self.expr(prompt);
+                for b in buttons {
+                    self.expr(b);
+                }
+                self.emit(Op::Answer {
+                    buttons: buttons.len(),
+                });
+            }
+            StmtKind::Ask { prompt, default } => {
+                self.expr(prompt);
+                match default {
+                    Some(d) => {
+                        self.expr(d);
+                        self.emit(Op::Ask { has_default: true });
+                    }
+                    None => {
+                        self.emit(Op::Ask { has_default: false });
+                    }
+                }
+            }
         }
     }
 
-    /// Store the value on top of the stack into a variable or a chunk of one.
-    fn put_target(&mut self, placement: Placement, target: &Target) {
-        // Walk in from the outermost chunk to the variable, then reverse, so
-        // the chunk nearest the variable comes first.
-        let mut steps: Vec<(ChunkKind, &ChunkSel)> = Vec::new();
-        let mut current = target;
-        let name = loop {
-            match current {
-                Target::Var(n) => break n.clone(),
-                Target::Chunk { kind, sel, of } => {
-                    steps.push((*kind, sel));
-                    current = &**of;
-                }
-            }
-        };
-        steps.reverse();
-
-        if steps.is_empty() {
-            match placement {
-                Placement::Into => self.emit(Op::Store(name)),
-                Placement::Before => self.emit(Op::StoreBefore(name)),
-                Placement::After => self.emit(Op::StoreAfter(name)),
-            };
-            return;
-        }
-
+    /// Emit the operand expressions of each chunk step, innermost first, and
+    /// return the shape of each step.
+    fn chunk_operands(&mut self, steps: &[(ChunkKind, &ChunkSel)]) -> Vec<(ChunkKind, SelShape)> {
         let mut shapes = Vec::new();
-        for (kind, sel) in &steps {
+        for (kind, sel) in steps {
             match sel {
                 ChunkSel::Ordinal(o) => shapes.push((*kind, SelShape::Ordinal(*o))),
                 ChunkSel::At(e) => {
@@ -283,11 +339,34 @@ impl Compiler {
                 }
             }
         }
+        shapes
+    }
+
+    /// Store the value on top of the stack into a variable or a chunk of one.
+    fn put_target(&mut self, placement: Placement, target: &Target) {
+        let (name, steps) = flatten_target(target);
+        if steps.is_empty() {
+            match placement {
+                Placement::Into => self.emit(Op::Store(name)),
+                Placement::Before => self.emit(Op::StoreBefore(name)),
+                Placement::After => self.emit(Op::StoreAfter(name)),
+            };
+            return;
+        }
+        let shapes = self.chunk_operands(&steps);
         self.emit(Op::PutChunk {
             name,
             steps: shapes,
             placement,
         });
+    }
+
+    /// Before jumping out of a loop, close the `try` blocks opened inside it.
+    fn leave_tries(&mut self) {
+        let loop_depth = self.loops.last().map_or(0, |ctx| ctx.try_depth);
+        for _ in loop_depth..self.try_depth {
+            self.emit(Op::TryEnd);
+        }
     }
 
     /// `wait until cond` (until = true) or `wait while cond` (until = false).
@@ -317,7 +396,10 @@ impl Compiler {
     }
 
     fn repeat(&mut self, kind: &RepeatKind, body: &[Stmt]) {
-        self.loops.push(LoopCtx::default());
+        self.loops.push(LoopCtx {
+            try_depth: self.try_depth,
+            ..LoopCtx::default()
+        });
         match kind {
             RepeatKind::Forever => {
                 let top = self.here();
@@ -461,4 +543,22 @@ impl Compiler {
             }
         }
     }
+}
+
+/// Split a target into its variable and its chunk steps, with the step
+/// nearest the variable first.
+fn flatten_target(target: &Target) -> (String, Vec<(ChunkKind, &ChunkSel)>) {
+    let mut steps = Vec::new();
+    let mut current = target;
+    let name = loop {
+        match current {
+            Target::Var(n) => break n.clone(),
+            Target::Chunk { kind, sel, of } => {
+                steps.push((*kind, sel));
+                current = &**of;
+            }
+        }
+    };
+    steps.reverse();
+    (name, steps)
 }

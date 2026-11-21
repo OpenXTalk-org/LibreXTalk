@@ -147,6 +147,23 @@ pub enum StmtKind {
     },
     /// `set the itemDelimiter to ";"`
     Set { prop: String, value: Expr },
+    /// `delete word 2 of x`
+    Delete(Target),
+    /// `try ... catch name ... end try`
+    Try {
+        body: Vec<Stmt>,
+        var: Option<String>,
+        catch_body: Vec<Stmt>,
+    },
+    /// `throw "message"`
+    Throw(Expr),
+    /// `answer "Sure?" with "Yes" or "No"`
+    Answer { prompt: Expr, buttons: Vec<Expr> },
+    /// `ask "Name?" with "Anon"`
+    Ask {
+        prompt: Expr,
+        default: Option<Expr>,
+    },
     /// `get <expr>` stores the value in `it`.
     Get(Expr),
     /// A bare expression typed at the prompt: evaluate it and show the result.

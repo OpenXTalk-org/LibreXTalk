@@ -8,11 +8,35 @@ use crate::{Host, Interpreter, XtError};
 struct Capture {
     out: Vec<String>,
     slept: Vec<Duration>,
+    /// Prompts shown by `answer` and `ask`, for the tests to check.
+    prompts: Vec<String>,
+    /// Button choices for `answer`, used in order. Empty means the first button.
+    answers: Vec<usize>,
+    /// Replies for `ask`, used in order. Empty means accept the default.
+    asks: Vec<Option<String>>,
 }
 
 impl Host for Capture {
     fn message(&mut self, text: &str) {
         self.out.push(text.to_string());
+    }
+
+    fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize {
+        self.prompts.push(format!("{prompt}|{}", buttons.join("/")));
+        if self.answers.is_empty() {
+            0
+        } else {
+            self.answers.remove(0)
+        }
+    }
+
+    fn ask(&mut self, prompt: &str, default: &str) -> Option<String> {
+        self.prompts.push(format!("{prompt}|{default}"));
+        if self.asks.is_empty() {
+            Some(default.to_string())
+        } else {
+            self.asks.remove(0)
+        }
     }
 
     // Record waits instead of really sleeping, so tests stay fast.
@@ -624,4 +648,249 @@ repeat with i = 1 to the number of words in colors
 end repeat
 "#;
     assert_eq!(run(script), vec!["red", "green", "blue"]);
+}
+
+// ----- built-in functions ----------------------------------------------------
+
+#[test]
+fn numeric_functions() {
+    assert_eq!(run("put abs(-3)"), vec!["3"]);
+    assert_eq!(run("put round(2.5)"), vec!["3"]);
+    assert_eq!(run("put round(-2.5)"), vec!["-3"]);
+    assert_eq!(run("put trunc(2.9)"), vec!["2"]);
+    assert_eq!(run("put sqrt(16)"), vec!["4"]);
+    assert_eq!(run("put min(3, 1, 2)"), vec!["1"]);
+    assert_eq!(run("put max(3, 1, 2)"), vec!["3"]);
+    assert_eq!(run("put mod(7, 2)"), vec!["1"]);
+    assert_eq!(run("put div(7, 2)"), vec!["3"]);
+    assert_eq!(run("put random(1)"), vec!["1"]);
+}
+
+#[test]
+fn random_stays_in_range() {
+    for _ in 0..20 {
+        let n: i64 = run("put random(6)")[0].parse().unwrap();
+        assert!((1..=6).contains(&n));
+    }
+}
+
+#[test]
+fn text_functions() {
+    assert_eq!(run("put length(\"héllo\")"), vec!["5"]);
+    assert_eq!(run("put the length of \"abc\""), vec!["3"]);
+    assert_eq!(run("put offset(\"lo\", \"hello\")"), vec!["4"]);
+    assert_eq!(run("put offset(\"z\", \"hello\")"), vec!["0"]);
+    assert_eq!(run("put toUpper(\"abc\")"), vec!["ABC"]);
+    assert_eq!(run("put toLower(\"ABC\")"), vec!["abc"]);
+    assert_eq!(run("put numToChar(65)"), vec!["A"]);
+    assert_eq!(run("put charToNum(\"A\")"), vec!["65"]);
+}
+
+#[test]
+fn time_functions() {
+    assert_eq!(run("put the seconds > 1700000000"), vec!["true"]);
+    assert_eq!(run("put seconds() > 1700000000"), vec!["true"]);
+    assert_eq!(run("put the milliseconds > the seconds"), vec!["true"]);
+}
+
+#[test]
+fn function_errors() {
+    assert!(run_err("put abs()").message.contains("expects"));
+    assert!(run_err("put abs(1, 2)").message.contains("expects"));
+    assert!(run_err("put sqrt(-1)").message.contains("square root"));
+    assert!(run_err("put abs(\"x\")").message.contains("Expected a number"));
+}
+
+#[test]
+fn a_user_function_beats_a_built_in() {
+    let script = "function length x\n  return \"mine\"\nend length\nput length(\"abc\")";
+    assert_eq!(run(script), vec!["mine"]);
+}
+
+#[test]
+fn parameter_functions() {
+    let script = r#"
+on show a b
+  put paramCount() & ":" & param(1) & ":" & param(0) & ":" & params()
+end show
+show "x" "y" "z"
+"#;
+    assert_eq!(run(script), vec!["3:x:show:x,y,z"]);
+}
+
+// ----- arithmetic commands ---------------------------------------------------
+
+#[test]
+fn arithmetic_commands() {
+    let script = r#"
+put 5 into n
+add 3 to n
+subtract 1 from n
+multiply n by 2
+divide n by 4
+put n
+"#;
+    assert_eq!(run(script), vec!["3.5"]);
+}
+
+#[test]
+fn arithmetic_on_a_chunk() {
+    let script = "put \"1,2,3\" into s\nadd 1 to item 2 of s\nput s";
+    assert_eq!(run(script), vec!["1,3,3"]);
+}
+
+#[test]
+fn arithmetic_on_an_unassigned_variable_is_an_error() {
+    assert!(run_err("add 1 to total").message.contains("Expected a number"));
+}
+
+// ----- delete ----------------------------------------------------------------
+
+#[test]
+fn deleting_chunks() {
+    assert_eq!(run("put \"a b c\" into s\ndelete word 2 of s\nput s"), vec!["a c"]);
+    assert_eq!(run("put \"a,b,c\" into s\ndelete last item of s\nput s"), vec!["a,b"]);
+    assert_eq!(run("put \"a,b,c\" into s\ndelete item 1 of s\nput s"), vec!["b,c"]);
+    assert_eq!(
+        run("put \"x\" & return & \"y\" into s\ndelete line 1 of s\nput s"),
+        vec!["y"]
+    );
+    assert_eq!(run("put \"hello\" into s\ndelete char 2 to 3 of s\nput s"), vec!["hlo"]);
+    assert_eq!(run("put \"a b c\" into s\ndelete word 9 of s\nput s"), vec!["a b c"]);
+    assert_eq!(run("put \"solo\" into s\ndelete word 1 of s\nput s"), vec![""]);
+}
+
+#[test]
+fn deleting_a_chunk_of_a_chunk() {
+    let script = "put \"a b\" & return & \"c d\" into s\ndelete word 1 of line 2 of s\nput line 2 of s";
+    assert_eq!(run(script), vec!["d"]);
+}
+
+#[test]
+fn delete_needs_a_chunk() {
+    assert!(run_err("put 1 into x\ndelete x").message.contains("chunk"));
+}
+
+// ----- try, catch, throw -----------------------------------------------------
+
+#[test]
+fn catching_an_error() {
+    let script = r#"
+try
+  put 1 / 0
+catch e
+  put "caught:" && e
+end try
+put "after"
+"#;
+    assert_eq!(run(script), vec!["caught: Can't divide by zero", "after"]);
+}
+
+#[test]
+fn a_try_that_does_not_fail_skips_the_catch() {
+    let script = "try\n  put \"ok\"\ncatch e\n  put \"bad\"\nend try";
+    assert_eq!(run(script), vec!["ok"]);
+}
+
+#[test]
+fn throw_and_catch() {
+    let script = "try\n  throw \"boom\"\ncatch err\n  put err\nend try";
+    assert_eq!(run(script), vec!["boom"]);
+    assert_eq!(run_err("throw \"bad\"").message, "bad");
+}
+
+#[test]
+fn an_error_in_a_called_handler_is_caught_by_the_caller() {
+    let script = r#"
+on inner
+  put 1 / 0
+end inner
+
+on outer
+  inner
+  put "not reached"
+end outer
+
+try
+  outer
+catch e
+  put "caught"
+end try
+"#;
+    assert_eq!(run(script), vec!["caught"]);
+}
+
+#[test]
+fn runaway_recursion_can_be_caught() {
+    let script = "on loopy\n  loopy\nend loopy\ntry\n  loopy\ncatch e\n  put \"caught\"\nend try";
+    assert_eq!(run(script), vec!["caught"]);
+}
+
+#[test]
+fn leaving_a_loop_closes_its_try() {
+    // If `exit repeat` left the try open, the division error below would be
+    // caught by the stale catch block instead of escaping.
+    let script = r#"
+repeat 2 times
+  try
+    exit repeat
+  catch e
+    put "x"
+  end try
+end repeat
+put 1 / 0
+"#;
+    assert_eq!(run_err(script).message, "Can't divide by zero");
+}
+
+#[test]
+fn try_needs_a_catch() {
+    assert!(run_err("try\n  put 1\nend try").message.contains("catch"));
+    assert!(run_err("try\n  put 1").incomplete);
+    assert!(run_err("catch e").message.contains("Unexpected"));
+}
+
+// ----- answer and ask --------------------------------------------------------
+
+#[test]
+fn answer_stores_the_chosen_button() {
+    let mut interp = Interpreter::new();
+    let mut host = Capture::default();
+    host.answers = vec![1];
+    let script = "answer \"Continue?\" with \"Yes\" or \"No\" or \"Cancel\"\nput it";
+    interp.run_source(script, &mut host).unwrap();
+    assert_eq!(host.out, vec!["No"]);
+    assert_eq!(host.prompts, vec!["Continue?|Yes/No/Cancel"]);
+}
+
+#[test]
+fn answer_without_buttons_has_ok() {
+    let mut interp = Interpreter::new();
+    let mut host = Capture::default();
+    interp.run_source("answer \"Hi\"\nput it", &mut host).unwrap();
+    assert_eq!(host.out, vec!["OK"]);
+    assert_eq!(host.prompts, vec!["Hi|OK"]);
+}
+
+#[test]
+fn ask_stores_the_reply() {
+    let mut interp = Interpreter::new();
+    let mut host = Capture::default();
+    host.asks = vec![Some("Bob".to_string())];
+    interp
+        .run_source("ask \"Name?\" with \"Anon\"\nput it", &mut host)
+        .unwrap();
+    assert_eq!(host.out, vec!["Bob"]);
+    assert_eq!(host.prompts, vec!["Name?|Anon"]);
+}
+
+#[test]
+fn cancelling_ask_sets_the_result() {
+    let mut interp = Interpreter::new();
+    let mut host = Capture::default();
+    host.asks = vec![None];
+    interp
+        .run_source("ask \"Name?\"\nput it & \"/\" & the result", &mut host)
+        .unwrap();
+    assert_eq!(host.out, vec!["/Cancel"]);
 }

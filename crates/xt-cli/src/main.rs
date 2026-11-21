@@ -3,8 +3,12 @@
 //!     xt                 start the prompt
 //!     xt run file.xt     run a script file
 
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process;
+
+use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 
 use xt_core::{parse_script, Host, Interpreter, XtError};
 
@@ -15,6 +19,52 @@ struct StdoutHost;
 impl Host for StdoutHost {
     fn message(&mut self, text: &str) {
         println!("{text}");
+    }
+
+    fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize {
+        println!("{prompt}");
+        for (i, label) in buttons.iter().enumerate() {
+            println!("  {}: {label}", i + 1);
+        }
+        loop {
+            print!("Choose 1-{}: ", buttons.len());
+            io::stdout().flush().ok();
+            let mut line = String::new();
+            match io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => return 0, // end of input: pick the first button
+                Ok(_) => {}
+            }
+            let reply = line.trim();
+            if let Ok(n) = reply.parse::<usize>() {
+                if (1..=buttons.len()).contains(&n) {
+                    return n - 1;
+                }
+            }
+            if let Some(i) = buttons.iter().position(|b| b.eq_ignore_ascii_case(reply)) {
+                return i;
+            }
+        }
+    }
+
+    fn ask(&mut self, prompt: &str, default: &str) -> Option<String> {
+        if default.is_empty() {
+            print!("{prompt} ");
+        } else {
+            print!("{prompt} [{default}] ");
+        }
+        io::stdout().flush().ok();
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => None, // end of input counts as cancelling
+            Ok(_) => {
+                let reply = line.trim_end_matches(|c: char| c == '\n' || c == '\r');
+                if reply.is_empty() {
+                    Some(default.to_string())
+                } else {
+                    Some(reply.to_string())
+                }
+            }
+        }
     }
 }
 
@@ -38,6 +88,13 @@ fn print_help() {
     println!("  put word 2 of \"alpha beta gamma\"");
     println!("  put the number of words in \"alpha beta gamma\"");
     println!("  put \"X\" into word 2 of s");
+    println!("  add 5 to total");
+    println!("  put round(2.5) && length(\"hello\")");
+    println!("  try");
+    println!("    put 1 / 0");
+    println!("  catch e");
+    println!("    put \"Caught:\" && e");
+    println!("  end try");
     println!();
     println!("A block (if, repeat, on, function) can span several lines.");
     println!("The prompt shows ... until the block is finished.");
@@ -47,6 +104,8 @@ fn print_help() {
     println!("  :ast <line>  show how a line is parsed");
     println!("  :help        show this help");
     println!("  :quit        leave (Ctrl-D works too)");
+    println!();
+    println!("Up and down arrows recall earlier lines. Ctrl-C cancels a line.");
 }
 
 /// Print an error. Syntax errors point at the place in the source.
@@ -98,33 +157,58 @@ fn show_ast(source: &str) {
     }
 }
 
+/// Where the prompt remembers earlier lines between sessions.
+fn history_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".xt_history"))
+}
+
 fn repl() {
-    println!("xt 0.0.3. Type :help for help, :quit to leave.");
+    println!("xt 0.0.5. Type :help for help, :quit to leave.");
 
     let mut interp = Interpreter::new();
     let mut host = StdoutHost;
-    let stdin = io::stdin();
-    let mut line = String::new();
+
+    // The line editor gives us the arrow keys: up and down page through
+    // earlier lines, left and right move within the line, and so on.
+    let mut editor = match DefaultEditor::new() {
+        Ok(editor) => editor,
+        Err(e) => {
+            eprintln!("Could not start the line editor: {e}");
+            process::exit(1);
+        }
+    };
+    let history_file = history_path();
+    if let Some(path) = &history_file {
+        // It is fine if there is no history file yet.
+        let _ = editor.load_history(path);
+    }
+
     // Lines of a block that is not finished yet.
     let mut buffer = String::new();
 
     loop {
-        print!("{}", if buffer.is_empty() { "> " } else { "... " });
-        io::stdout().flush().ok();
-
-        line.clear();
-        match stdin.lock().read_line(&mut line) {
-            Ok(0) => {
-                println!();
-                break; // end of input (Ctrl-D)
+        let prompt = if buffer.is_empty() { "> " } else { "... " };
+        let line = match editor.readline(prompt) {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C abandons whatever is being typed.
+                if !buffer.is_empty() {
+                    println!("(cancelled)");
+                }
+                buffer.clear();
+                continue;
             }
-            Ok(_) => {}
+            Err(ReadlineError::Eof) => break, // Ctrl-D
             Err(e) => {
                 eprintln!("Could not read input: {e}");
                 break;
             }
-        }
+        };
         let input = line.trim_end();
+        if !input.trim().is_empty() {
+            let _ = editor.add_history_entry(input);
+        }
 
         if buffer.is_empty() {
             let trimmed = input.trim();
@@ -169,6 +253,10 @@ fn repl() {
             report_error(&buffer, &err, false);
         }
         buffer.clear();
+    }
+
+    if let Some(path) = &history_file {
+        let _ = editor.save_history(path);
     }
 }
 

@@ -7,6 +7,7 @@
 //! script shows goes through the [`Host`] trait.
 
 mod ast;
+mod builtins;
 mod chunk;
 mod compile;
 mod error;
