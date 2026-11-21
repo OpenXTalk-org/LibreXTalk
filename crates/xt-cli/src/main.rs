@@ -1,3 +1,4 @@
+
 //! `xt`: run xTalk scripts, or type them at a prompt.
 //!
 //!     xt                 start the prompt
@@ -22,12 +23,26 @@ impl Host for StdoutHost {
     }
 
     fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize {
+        // With only one button there is nothing to choose, so show the
+        // message and carry on without waiting.
+        if buttons.len() <= 1 {
+            match buttons.first() {
+                Some(label) => println!("{prompt} [{label}]"),
+                None => println!("{prompt}"),
+            }
+            return 0;
+        }
+
         println!("{prompt}");
         for (i, label) in buttons.iter().enumerate() {
-            println!("  {}: {label}", i + 1);
+            if i == 0 {
+                println!("  {}: {label} (default)", i + 1);
+            } else {
+                println!("  {}: {label}", i + 1);
+            }
         }
         loop {
-            print!("Choose 1-{}: ", buttons.len());
+            print!("Choose 1-{} [1]: ", buttons.len());
             io::stdout().flush().ok();
             let mut line = String::new();
             match io::stdin().read_line(&mut line) {
@@ -35,6 +50,9 @@ impl Host for StdoutHost {
                 Ok(_) => {}
             }
             let reply = line.trim();
+            if reply.is_empty() {
+                return 0; // Return alone accepts the default
+            }
             if let Ok(n) = reply.parse::<usize>() {
                 if (1..=buttons.len()).contains(&n) {
                     return n - 1;
