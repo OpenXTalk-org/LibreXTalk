@@ -938,3 +938,85 @@ fn errors_after_a_semicolon_point_at_the_right_place() {
     let err = run_err("put 1; put 1 / 0");
     assert_eq!(err.line, Some(0));
 }
+
+// ----- the cr constant -------------------------------------------------------
+
+#[test]
+fn cr_is_a_newline() {
+    assert_eq!(run("put \"a\" & CR & \"b\""), vec!["a\nb"]);
+    assert_eq!(run("put \"a\" & cr & \"b\""), vec!["a\nb"]);
+    assert_eq!(run("put \"a\" & Cr & \"b\""), vec!["a\nb"]);
+    assert_eq!(run("put cr = return"), vec!["true"]);
+    assert_eq!(run("put cr = linefeed"), vec!["true"]);
+    assert_eq!(run("put length(cr)"), vec!["1"]);
+    assert_eq!(
+        run("put the number of lines in (\"a\" & cr & \"b\")"),
+        vec!["2"]
+    );
+    assert_eq!(run("put line 2 of (\"a\" & CR & \"b\")"), vec!["b"]);
+}
+
+#[test]
+fn constants_cannot_be_assigned() {
+    assert!(run_err("put 5 into cr").message.contains("constant"));
+    assert!(run_err("put 5 into return").message.contains("constant"));
+    assert!(run_err("add 1 to pi").message.contains("constant"));
+    assert!(run_err("put 1 into word 2 of space").message.contains("constant"));
+    assert!(run_err("repeat with space = 1 to 3; put 1; end repeat")
+        .message
+        .contains("constant"));
+}
+
+// ----- more character constants ----------------------------------------------
+
+#[test]
+fn character_constants() {
+    assert_eq!(run("put \"a\" & tab & \"b\""), vec!["a\tb"]);
+    assert_eq!(run("put \"a\" & comma & \"b\""), vec!["a,b"]);
+    assert_eq!(run("put \"a\" & colon & \"b\""), vec!["a:b"]);
+    assert_eq!(run("put \"a\" & slash & \"b\""), vec!["a/b"]);
+    assert_eq!(run("put \"a\" & backslash & \"b\""), vec!["a\\b"]);
+    assert_eq!(run("put \"a\" & space & \"b\""), vec!["a b"]);
+    assert_eq!(run("put quote & \"hi\" & quote"), vec!["\"hi\""]);
+    assert_eq!(run("put \"a\" & crlf & \"b\""), vec!["a\r\nb"]);
+}
+
+#[test]
+fn character_constants_have_the_right_codes() {
+    assert_eq!(run("put charToNum(tab)"), vec!["9"]);
+    assert_eq!(run("put charToNum(return)"), vec!["10"]);
+    assert_eq!(run("put charToNum(cr)"), vec!["10"]);
+    assert_eq!(run("put charToNum(lf)"), vec!["10"]);
+    assert_eq!(run("put charToNum(linefeed)"), vec!["10"]);
+    assert_eq!(run("put charToNum(formfeed)"), vec!["12"]);
+    assert_eq!(run("put charToNum(eof)"), vec!["4"]);
+    assert_eq!(run("put charToNum(null)"), vec!["0"]);
+    assert_eq!(run("put charToNum(space)"), vec!["32"]);
+    assert_eq!(run("put charToNum(quote)"), vec!["34"]);
+    assert_eq!(run("put charToNum(comma)"), vec!["44"]);
+    assert_eq!(run("put charToNum(colon)"), vec!["58"]);
+    assert_eq!(run("put charToNum(slash)"), vec!["47"]);
+    assert_eq!(run("put charToNum(backslash)"), vec!["92"]);
+    assert_eq!(run("put length(crlf)"), vec!["2"]);
+    assert_eq!(run("put lf = linefeed"), vec!["true"]);
+}
+
+#[test]
+fn constants_are_case_insensitive() {
+    assert_eq!(run("put length(CRLF)"), vec!["2"]);
+    assert_eq!(run("put TAB = tab"), vec!["true"]);
+    assert_eq!(run("put Comma = comma"), vec!["true"]);
+}
+
+#[test]
+fn a_tab_can_be_the_item_delimiter() {
+    let script = "set the itemDelimiter to tab\nput item 2 of (\"a\" & tab & \"b\" & tab & \"c\")";
+    assert_eq!(run(script), vec!["b"]);
+}
+
+#[test]
+fn the_new_constants_cannot_be_assigned_either() {
+    assert!(run_err("put 1 into null").message.contains("constant"));
+    assert!(run_err("put 1 into slash").message.contains("constant"));
+    assert!(run_err("put 1 into crlf").message.contains("constant"));
+}

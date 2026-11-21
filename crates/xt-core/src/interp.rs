@@ -609,12 +609,23 @@ impl Interpreter {
 
 // ----- values ----------------------------------------------------------------
 
-fn constant(name: &str) -> Option<String> {
+/// The value of a constant, if `name` is one. Constants are case-insensitive.
+/// `return`, `cr`, `linefeed`, and `lf` are all the same character: a newline
+/// (a line feed), not a carriage return, as in OpenXTalk and xBuilder.
+/// `crlf` is a carriage return followed by a line feed. `eof` is the
+/// end-of-transmission character (ASCII 4) and `null` is ASCII 0, as in LiveCode.
+pub(crate) fn constant(name: &str) -> Option<String> {
     let value = match name.to_lowercase().as_str() {
         "empty" => String::new(),
         "space" => " ".to_string(),
         "tab" => "\t".to_string(),
-        "return" | "linefeed" => "\n".to_string(),
+        "return" | "cr" | "linefeed" | "lf" => "\n".to_string(),
+        "crlf" => "\r\n".to_string(),
+        "formfeed" => "\u{c}".to_string(),
+        "eof" => "\u{4}".to_string(),
+        "null" => "\u{0}".to_string(),
+        "backslash" => "\\".to_string(),
+        "slash" => "/".to_string(),
         "quote" => "\"".to_string(),
         "comma" => ",".to_string(),
         "colon" => ":".to_string(),
@@ -624,6 +635,11 @@ fn constant(name: &str) -> Option<String> {
         _ => return None,
     };
     Some(value)
+}
+
+/// Is this the name of a constant? Scripts cannot assign to constants.
+pub(crate) fn is_constant(name: &str) -> bool {
+    constant(name).is_some()
 }
 
 fn parse_num(s: &str) -> Option<f64> {
