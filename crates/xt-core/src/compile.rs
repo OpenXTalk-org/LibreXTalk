@@ -71,6 +71,10 @@ pub enum Op {
     TryEnd,
     /// Pop a value and raise it as an error.
     Throw,
+    /// Pop a script and run it with the named shell. The handler pauses until
+    /// the command finishes, but the host keeps running. The output goes to
+    /// `it` and the exit status to `the result`.
+    DoShell { shell: String },
     /// Pop `buttons` labels and a prompt, ask the host, and store the choice in `it`.
     Answer { buttons: usize },
     /// Pop a default (if there is one) and a prompt, ask the host for text,
@@ -292,6 +296,12 @@ impl Compiler {
                 self.stmts(catch_body);
                 let end = self.here();
                 self.patch(skip, end);
+            }
+            StmtKind::Do { script, language } => {
+                self.expr(script);
+                self.emit(Op::DoShell {
+                    shell: language.clone(),
+                });
             }
             StmtKind::Throw(e) => {
                 self.expr(e);

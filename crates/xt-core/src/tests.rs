@@ -21,6 +21,10 @@ impl Host for Capture {
         self.out.push(text.to_string());
     }
 
+    fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
+        true
+    }
+
     fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize {
         self.prompts.push(format!("{prompt}|{}", buttons.join("/")));
         if self.answers.is_empty() {
@@ -1019,4 +1023,95 @@ fn the_new_constants_cannot_be_assigned_either() {
     assert!(run_err("put 1 into null").message.contains("constant"));
     assert!(run_err("put 1 into slash").message.contains("constant"));
     assert!(run_err("put 1 into crlf").message.contains("constant"));
+}
+
+// ----- shell access ----------------------------------------------------------
+
+/// A host that implements only what is required, so it denies shell access.
+struct Silent;
+
+impl Host for Silent {
+    fn message(&mut self, _text: &str) {}
+}
+
+#[test]
+fn shell_access_is_denied_unless_the_host_allows_it() {
+    let mut interp = Interpreter::new();
+    let mut host = Silent;
+    let err = interp
+        .run_source("put shell(\"echo hi\")", &mut host)
+        .unwrap_err();
+    assert!(err.message.contains("does not allow"));
+    let err = interp
+        .run_source("do \"echo hi\" as sh", &mut host)
+        .unwrap_err();
+    assert!(err.message.contains("does not allow"));
+}
+
+#[test]
+fn do_needs_a_known_shell() {
+    assert!(run_err("do \"ls\" as klingon").message.contains("Unknown language"));
+    assert!(run_err("do \"ls\"").message.contains("as"));
+}
+
+#[cfg(unix)]
+mod shell_tests {
+    use super::*;
+    use crate::Status;
+
+    #[test]
+    fn the_shell_function_returns_standard_output() {
+        assert_eq!(run("put shell(\"printf hello\")"), vec!["hello"]);
+        assert_eq!(run("put shell(\"echo hi\")"), vec!["hi\n"]);
+        assert_eq!(run("put word 2 of shell(\"printf 'a b c'\")"), vec!["b"]);
+        assert_eq!(run("put the length of shell(\"uname\") > 0"), vec!["true"]);
+    }
+
+    #[test]
+    fn the_shell_function_sets_the_result_to_the_exit_status() {
+        assert_eq!(run("put shell(\"exit 3\") & \"/\" & the result"), vec!["/3"]);
+        assert_eq!(run("put shell(\"true\") & the result"), vec!["0"]);
+    }
+
+    #[test]
+    fn standard_error_is_discarded() {
+        assert_eq!(run("put shell(\"printf out; echo err 1>&2\")"), vec!["out"]);
+        assert_eq!(
+            run("put shell(\"printf out; echo err 1>&2\") is \"out\""),
+            vec!["true"]
+        );
+    }
+
+    #[test]
+    fn do_as_shell_stores_output_in_it() {
+        assert_eq!(run("do \"printf hi\" as sh\nput it"), vec!["hi"]);
+        assert_eq!(run("do \"printf hi\" as shell\nput it"), vec!["hi"]);
+        assert_eq!(run("do \"exit 2\" as sh\nput the result"), vec!["2"]);
+    }
+
+    #[test]
+    fn do_as_shell_pauses_the_script_but_not_the_host() {
+        let mut interp = Interpreter::new();
+        let mut host = Capture::default();
+        interp
+            .load("put \"before\"\ndo \"sleep 0.2; printf done\" as sh\nput it")
+            .unwrap();
+        let status = interp.run(&mut host).unwrap();
+        assert!(matches!(status, Status::Sleeping(_)));
+        assert_eq!(host.out, vec!["before"]);
+        // Keep resuming, as a host's event loop would.
+        loop {
+            match interp.run(&mut host).unwrap() {
+                Status::Finished => break,
+                Status::Sleeping(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        assert_eq!(host.out, vec!["before", "done"]);
+    }
+
+    #[test]
+    fn a_missing_command_is_an_exit_status_not_an_error() {
+        let script = "put shell(\"nosuchcommand_xyz 2>/dev/null\") & \"/\" & the result";
+        assert_eq!(run(script), vec!["/127"]);
+    }
 }

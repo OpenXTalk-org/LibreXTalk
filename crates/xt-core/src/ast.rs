@@ -157,6 +157,8 @@ pub enum StmtKind {
     },
     /// `throw "message"`
     Throw(Expr),
+    /// `do "uname -m" as shell`
+    Do { script: Expr, language: String },
     /// `answer "Sure?" with "Yes" or "No"`
     Answer { prompt: Expr, buttons: Vec<Expr> },
     /// `ask "Name?" with "Anon"`

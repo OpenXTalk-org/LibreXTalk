@@ -19,6 +19,7 @@ use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, Op, SelShape};
 use crate::error::XtError;
 use crate::parser::parse_script;
+use crate::shell;
 
 /// The most handlers that may be running at once. This stops a handler that
 /// calls itself forever. The VM keeps its own stack, so it is a script error,
@@ -47,6 +48,13 @@ pub trait Host {
     /// The default accepts the suggested text.
     fn ask(&mut self, _prompt: &str, default: &str) -> Option<String> {
         Some(default.to_string())
+    }
+
+    /// May a script run this shell command? A script with shell access can
+    /// do anything the person running it can, so the default is no. A host
+    /// opts in by returning true.
+    fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
+        false
     }
 }
 
@@ -80,6 +88,8 @@ struct Frame {
     args: Vec<String>,
     /// Open `try` blocks, innermost last.
     tries: Vec<TryEntry>,
+    /// A shell command this handler is waiting for.
+    job: Option<shell::Job>,
 }
 
 /// An open `try` block.
@@ -109,6 +119,7 @@ impl Frame {
             is_main,
             args: Vec::new(),
             tries: Vec::new(),
+            job: None,
         }
     }
 }
@@ -381,6 +392,34 @@ impl Interpreter {
                     }
                 }
             }
+            Op::DoShell { shell } => {
+                // The first time through, start the command. After that, keep
+                // coming back to this op until the command is done.
+                if self.frame_mut().job.is_none() {
+                    let script = self.pop()?;
+                    if !host.allow_shell(&shell, &script) {
+                        return Err(XtError::new("The host does not allow shell commands"));
+                    }
+                    let job = shell::spawn(&shell, &script)?;
+                    self.frame_mut().job = Some(job);
+                }
+                let polled = match self.frame_mut().job.as_mut() {
+                    Some(job) => job.poll(),
+                    None => None,
+                };
+                match polled {
+                    None => {
+                        self.frame_mut().pc -= 1;
+                        return Ok(Flow::Sleep(Duration::from_millis(16)));
+                    }
+                    Some(result) => {
+                        self.frame_mut().job = None;
+                        let output = result?;
+                        self.write_var("it", output.stdout);
+                        self.result = output.status.to_string();
+                    }
+                }
+            }
             Op::Neg => {
                 let v = self.pop()?;
                 let n = to_number(&v)?;
@@ -408,7 +447,7 @@ impl Interpreter {
                     self.frame_mut().pc = target;
                 }
             }
-            Op::Call { name, argc, value } => self.call(&name, argc, value)?,
+            Op::Call { name, argc, value } => self.call(&name, argc, value, host)?,
             Op::Return => self.do_return()?,
             Op::ExitToTop => self.abort(),
             Op::Wait(unit) => {
@@ -491,7 +530,13 @@ impl Interpreter {
         x
     }
 
-    fn call(&mut self, name: &str, argc: usize, wants_value: bool) -> Result<(), XtError> {
+    fn call(
+        &mut self,
+        name: &str,
+        argc: usize,
+        wants_value: bool,
+        host: &mut dyn Host,
+    ) -> Result<(), XtError> {
         let mut args = Vec::with_capacity(argc);
         for _ in 0..argc {
             args.push(self.pop()?);
@@ -502,6 +547,22 @@ impl Interpreter {
         let handler = match found {
             Some(h) => h,
             None => {
+                // `shell(command)` runs a command and waits for it.
+                if wants_value && name.eq_ignore_ascii_case("shell") {
+                    if args.len() != 1 {
+                        return Err(XtError::new(format!(
+                            "shell expects 1 argument(s) but got {}",
+                            args.len()
+                        )));
+                    }
+                    if !host.allow_shell("shell", &args[0]) {
+                        return Err(XtError::new("The host does not allow shell commands"));
+                    }
+                    let output = shell::run_blocking("shell", &args[0])?;
+                    self.result = output.status.to_string();
+                    self.push(output.stdout);
+                    return Ok(());
+                }
                 // No handler of that name: try the built-in functions.
                 if wants_value && builtins::is_builtin(name) {
                     let rand = self.next_random();

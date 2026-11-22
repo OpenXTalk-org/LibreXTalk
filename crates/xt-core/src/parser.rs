@@ -8,7 +8,9 @@
 use crate::ast::*;
 use crate::builtins;
 use crate::error::XtError;
+use crate::interp::is_constant;
 use crate::lexer::{lex, Token, TokenKind};
+use crate::shell;
 
 /// Parse a whole script: handler definitions plus loose statements.
 pub fn parse_script(src: &str) -> Result<Script, XtError> {
@@ -452,6 +454,9 @@ impl Parser {
             RepeatKind::Until(self.parse_expr()?)
         } else if self.is_word("with") {
             self.pos += 1;
+            if self.word_at(0).is_some_and(is_constant) {
+                return Err(self.err_here("That name is a constant and can't be a loop variable"));
+            }
             let var = self.take_word()?;
             if !self.is_op("=") {
                 return Err(self.err_here("Expected '=' here"));
@@ -644,6 +649,23 @@ impl Parser {
                     ))
                 }
             }
+            "do" => {
+                self.pos += 1;
+                let script = self.parse_expr()?;
+                if !self.is_word("as") {
+                    return Err(self.err_here(
+                        "Only 'do ... as <shell>' is supported so far, as in: do \"uname -m\" as shell",
+                    ));
+                }
+                self.pos += 1;
+                if !self.word_at(0).is_some_and(shell::is_shell_name) {
+                    return Err(self.err_here(
+                        "Unknown language. Use shell, sh, bash, zsh, dash, ksh, fish, csh, tcsh, powershell, pwsh, or cmd",
+                    ));
+                }
+                let language = self.take_word()?.to_lowercase();
+                Ok(StmtKind::Do { script, language })
+            }
             "throw" => {
                 self.pos += 1;
                 Ok(StmtKind::Throw(self.parse_expr()?))
@@ -710,7 +732,10 @@ impl Parser {
         };
         let expr = self.parse_primary()?;
         match expr_to_target(expr) {
-            Some(target) => Ok((target, line, col)),
+            Some(target) => {
+                check_not_constant(&target, line, col)?;
+                Ok((target, line, col))
+            }
             None => Err(XtError::at(
                 line,
                 col,
@@ -739,7 +764,10 @@ impl Parser {
         };
         let expr = self.parse_primary()?;
         match expr_to_target(expr) {
-            Some(target) => Ok(Some((placement, target))),
+            Some(target) => {
+                check_not_constant(&target, line, col)?;
+                Ok(Some((placement, target)))
+            }
             None => Err(XtError::at(
                 line,
                 col,
@@ -1125,5 +1153,25 @@ fn arithmetic_put(target: Target, op: BinOp, operand: Expr) -> StmtKind {
             right: Box::new(operand),
         },
         target: Some((Placement::Into, target)),
+    }
+}
+
+/// A script cannot assign to a constant such as `cr` or `pi`.
+fn check_not_constant(target: &Target, line: usize, col: usize) -> Result<(), XtError> {
+    let mut current = target;
+    loop {
+        match current {
+            Target::Var(name) => {
+                if is_constant(name) {
+                    return Err(XtError::at(
+                        line,
+                        col,
+                        format!("'{name}' is a constant and can't be changed"),
+                    ));
+                }
+                return Ok(());
+            }
+            Target::Chunk { of, .. } => current = &**of,
+        }
     }
 }

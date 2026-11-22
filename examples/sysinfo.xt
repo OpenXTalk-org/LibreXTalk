@@ -1,0 +1,16 @@
+-- Environment information from standard command line tools.
+-- Run with: xt run --allow-shell examples/sysinfo.xt
+put "System:" && line 1 of shell("uname -sr")
+put "Processor:" && line 1 of shell("uname -m")
+put "Host:" && line 1 of shell("hostname")
+
+if shell("uname") contains "Darwin" then
+  put "macOS version:" && line 1 of shell("sw_vers -productVersion")
+  put "Display:" && line 1 of shell("system_profiler SPDisplaysDataType | grep Resolution")
+else
+  put "Kernel:" && line 1 of shell("uname -v")
+end if
+
+-- The same thing without freezing the host while it runs:
+do "uname -m" as shell
+put "Processor (as shell):" && line 1 of it

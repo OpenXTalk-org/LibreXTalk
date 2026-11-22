@@ -14,6 +14,7 @@ mod error;
 mod interp;
 mod lexer;
 mod parser;
+mod shell;
 
 #[cfg(test)]
 mod tests;

@@ -14,9 +14,19 @@ use xt_core::{parse_script, Host, Interpreter, XtError};
 
 /// The host for a terminal: the message box is standard output, and a wait
 /// really sleeps (the default `sleep` in the `Host` trait).
-struct StdoutHost;
+struct StdoutHost {
+    /// May scripts run shell commands? See `Host::allow_shell`.
+    allow_shell: bool,
+}
 
 impl Host for StdoutHost {
+    fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
+        if !self.allow_shell {
+            eprintln!("(shell commands are off: run with --allow-shell to permit them)");
+        }
+        self.allow_shell
+    }
+
     fn message(&mut self, text: &str) {
         println!("{text}");
     }
@@ -89,6 +99,8 @@ fn print_usage() {
     println!("Usage:");
     println!("  xt               start the prompt");
     println!("  xt run <file>    run a script file");
+    println!("  xt run --allow-shell <file>");
+    println!("                   run a script that may use shell commands");
 }
 
 fn print_help() {
@@ -106,6 +118,8 @@ fn print_help() {
     println!("  put the number of words in \"alpha beta gamma\"");
     println!("  put \"X\" into word 2 of s");
     println!("  add 5 to total");
+    println!("  put shell(\"uname -m\")");
+    println!("  do \"sleep 2; date\" as bash      -- then: put it");
     println!("  put round(2.5) && length(\"hello\")");
     println!("  try");
     println!("    put 1 / 0");
@@ -148,7 +162,7 @@ fn report_error(source: &str, err: &XtError, show_line: bool) {
     }
 }
 
-fn run_file(path: &str) {
+fn run_file(path: &str, allow_shell: bool) {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -157,7 +171,7 @@ fn run_file(path: &str) {
         }
     };
     let mut interp = Interpreter::new();
-    let mut host = StdoutHost;
+    let mut host = StdoutHost { allow_shell };
     if let Err(err) = interp.load(&source) {
         report_error(&source, &err, true);
         process::exit(1);
@@ -182,10 +196,11 @@ fn history_path() -> Option<PathBuf> {
 }
 
 fn repl() {
-    println!("xt 0.0.5. Type :help for help, :quit to leave.");
+    println!("xt 0.0.6. Type :help for help, :quit to leave.");
 
     let mut interp = Interpreter::new();
-    let mut host = StdoutHost;
+    // At the prompt you are the one typing, so shell commands are allowed.
+    let mut host = StdoutHost { allow_shell: true };
 
     // The line editor gives us the arrow keys: up and down page through
     // earlier lines, left and right move within the line, and so on.
@@ -282,13 +297,17 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => repl(),
-        Some("run") => match args.get(1) {
-            Some(path) => run_file(path),
-            None => {
-                print_usage();
-                process::exit(2);
+        Some("run") => {
+            let allow_shell = args.iter().any(|a| a == "--allow-shell");
+            let path = args.iter().skip(1).find(|a| !a.starts_with("--"));
+            match path {
+                Some(path) => run_file(path, allow_shell),
+                None => {
+                    print_usage();
+                    process::exit(2);
+                }
             }
-        },
+        }
         Some("help") | Some("--help") | Some("-h") => print_usage(),
         Some(other) => {
             eprintln!("Unknown command '{other}'.");
