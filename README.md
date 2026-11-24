@@ -1,4 +1,4 @@
-# xtalk-rs, step 6: shell access (`shell()` and `do ... as shell`)
+# xtalk-rs, step 7: the object model (stacks, cards, buttons, fields, messages)
 
 A small headless xTalk interpreter, with a command prompt.
 
@@ -15,6 +15,7 @@ Inside the prompt, type `:help`. The up and down arrows recall earlier lines (ke
   - `parser.rs`: tokens to a syntax tree
   - `compile.rs`: syntax tree to bytecode
   - `builtins.rs`: built-in functions (numbers, text, time, parameters)
+  - `objects.rs`: the arena of stacks, cards, and controls, with their properties
   - `shell.rs`: running shell commands, blocking or on a worker thread
   - `chunk.rs`: finding and replacing characters, words, items, and lines
   - `interp.rs`: the virtual machine, with its own call stack
@@ -39,3 +40,14 @@ License: MIT OR Apache-2.0 (add LICENSE-MIT and LICENSE-APACHE before publishing
 
 Scripts run with the same power you have, so shell access is off unless the
 host allows it. The prompt allows it. `xt run file.xt` needs `--allow-shell`.
+
+## Objects
+
+    create button "OK"                       -- it holds the reference
+    set the rect of button 1 to "10,20,110,50"
+    create field "msg"
+    put "hello" into field "msg"
+    set the script of button 1 to "on mouseUp; put clicked; end mouseUp"
+    send mouseUp to button 1                 -- the script's handler runs
+
+`:objects` at the prompt lists the stacks, cards, and controls.
