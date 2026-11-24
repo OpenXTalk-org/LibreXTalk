@@ -84,7 +84,7 @@ impl Host for StdoutHost {
         match io::stdin().read_line(&mut line) {
             Ok(0) | Err(_) => None, // end of input counts as cancelling
             Ok(_) => {
-                let reply = line.trim_end_matches(|c: char| c == '\n' || c == '\r');
+                let reply = line.trim_end_matches(['\n', '\r']);
                 if reply.is_empty() {
                     Some(default.to_string())
                 } else {

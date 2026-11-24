@@ -39,7 +39,10 @@ pub enum Expr {
         right: Box<Expr>,
     },
     /// A call to a user-defined function: `name(args)`.
-    Call { name: String, args: Vec<Expr> },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
     /// A chunk of a string: `word 2 of x`, `the last line of x`.
     Chunk {
         kind: ChunkKind,
@@ -47,14 +50,23 @@ pub enum Expr {
         of: Box<Expr>,
     },
     /// `the number of words in x`
-    Count { kind: ChunkKind, of: Box<Expr> },
+    Count {
+        kind: ChunkKind,
+        of: Box<Expr>,
+    },
     /// An object in a value position: `button 1`, `me`. A field gives its
     /// text, and any other object gives its reference.
     Object(ObjSpec),
     /// `the label of button 1`
-    Prop { name: String, of: ObjSpec },
+    Prop {
+        name: String,
+        of: ObjSpec,
+    },
     /// `the number of buttons of card 2`
-    ObjCount { kind: ObjKind, of: Option<ObjSpec> },
+    ObjCount {
+        kind: ObjKind,
+        of: Option<ObjSpec>,
+    },
 }
 
 /// A kind of object.
@@ -201,7 +213,10 @@ pub enum StmtKind {
         target: Option<(Placement, Target)>,
     },
     /// `set the itemDelimiter to ";"`
-    Set { prop: String, value: Expr },
+    Set {
+        prop: String,
+        value: Expr,
+    },
     /// `delete word 2 of x`
     Delete(Target),
     /// `try ... catch name ... end try`
@@ -213,7 +228,10 @@ pub enum StmtKind {
     /// `throw "message"`
     Throw(Expr),
     /// `do "uname -m" as shell`
-    Do { script: Expr, language: String },
+    Do {
+        script: Expr,
+        language: String,
+    },
     /// `set the label of button 1 to "Go"`
     SetObjProp {
         prop: String,
@@ -231,11 +249,17 @@ pub enum StmtKind {
     /// `go to card 2`
     Go(ObjSpec),
     /// `send mouseUp to button 1`
-    Send { message: Expr, target: ObjSpec },
+    Send {
+        message: Expr,
+        target: ObjSpec,
+    },
     /// `pass mouseUp`
     Pass(String),
     /// `answer "Sure?" with "Yes" or "No"`
-    Answer { prompt: Expr, buttons: Vec<Expr> },
+    Answer {
+        prompt: Expr,
+        buttons: Vec<Expr>,
+    },
     /// `ask "Name?" with "Anon"`
     Ask {
         prompt: Expr,
@@ -246,7 +270,10 @@ pub enum StmtKind {
     /// A bare expression typed at the prompt: evaluate it and show the result.
     Eval(Expr),
     /// A message to a user-defined handler: `name arg1 arg2` or `name a, b`.
-    Call { name: String, args: Vec<Expr> },
+    Call {
+        name: String,
+        args: Vec<Expr>,
+    },
     If {
         cond: Expr,
         then_body: Vec<Stmt>,

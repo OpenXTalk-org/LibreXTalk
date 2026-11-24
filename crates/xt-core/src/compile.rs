@@ -46,7 +46,10 @@ pub enum Op {
     Yield,
     /// Pop the selector operands (see `SelShape`), then the source text, and
     /// push the chunk.
-    Chunk { kind: ChunkKind, shape: SelShape },
+    Chunk {
+        kind: ChunkKind,
+        shape: SelShape,
+    },
     /// Pop a text and push how many chunks of this kind it has.
     Count(ChunkKind),
     /// Put a value into a chunk of a variable. The value is on the stack
@@ -66,7 +69,10 @@ pub enum Op {
     },
     /// Start a try block. If an error happens, jump to `catch_at` and store
     /// the error message in `var` (unless it is empty).
-    TryBegin { catch_at: usize, var: String },
+    TryBegin {
+        catch_at: usize,
+        var: String,
+    },
     /// The try block finished without an error.
     TryEnd,
     /// Pop a value and raise it as an error.
@@ -94,7 +100,10 @@ pub enum Op {
     /// Pop a reference and then a value, and set a property.
     SetObjProp(String),
     /// Count the objects of a kind. Pops the container reference if `has_of`.
-    CountObjs { kind: ObjKind, has_of: bool },
+    CountObjs {
+        kind: ObjKind,
+        has_of: bool,
+    },
     /// Make an object. Pops the parent reference, then the name, if present.
     CreateObj {
         kind: ObjKind,
@@ -118,12 +127,18 @@ pub enum Op {
     /// Pop a script and run it with the named shell. The handler pauses until
     /// the command finishes, but the host keeps running. The output goes to
     /// `it` and the exit status to `the result`.
-    DoShell { shell: String },
+    DoShell {
+        shell: String,
+    },
     /// Pop `buttons` labels and a prompt, ask the host, and store the choice in `it`.
-    Answer { buttons: usize },
+    Answer {
+        buttons: usize,
+    },
     /// Pop a default (if there is one) and a prompt, ask the host for text,
     /// and store the reply in `it`.
-    Ask { has_default: bool },
+    Ask {
+        has_default: bool,
+    },
 }
 
 /// How an object is picked, and so which operands it takes from the stack.

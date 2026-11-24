@@ -101,7 +101,11 @@ fn lex_line(chars: &[char], line: usize, tokens: &mut Vec<Token>) -> Result<bool
                 i += 1;
             }
             if i >= chars.len() {
-                return Err(XtError::at(line, start, "Missing closing quote for this string"));
+                return Err(XtError::at(
+                    line,
+                    start,
+                    "Missing closing quote for this string",
+                ));
             }
             let text: String = chars[body_start..i].iter().collect();
             i += 1; // skip the closing quote
@@ -118,7 +122,13 @@ fn lex_line(chars: &[char], line: usize, tokens: &mut Vec<Token>) -> Result<bool
             push(tokens, TokenKind::Newline, line, start, start + 1);
             i += 1;
         } else if let Some(op) = two_char_op(c, next) {
-            push(tokens, TokenKind::Op(op.to_string()), line, start, start + 2);
+            push(
+                tokens,
+                TokenKind::Op(op.to_string()),
+                line,
+                start,
+                start + 2,
+            );
             i += 2;
         } else if "+-*/&(),=<>".contains(c) {
             push(tokens, TokenKind::Op(c.to_string()), line, start, start + 1);
@@ -129,10 +139,20 @@ fn lex_line(chars: &[char], line: usize, tokens: &mut Vec<Token>) -> Result<bool
                 '≥' => ">=",
                 _ => "<>",
             };
-            push(tokens, TokenKind::Op(op.to_string()), line, start, start + 1);
+            push(
+                tokens,
+                TokenKind::Op(op.to_string()),
+                line,
+                start,
+                start + 1,
+            );
             i += 1;
         } else {
-            return Err(XtError::at(line, start, format!("Unexpected character '{c}'")));
+            return Err(XtError::at(
+                line,
+                start,
+                format!("Unexpected character '{c}'"),
+            ));
         }
     }
     Ok(false)

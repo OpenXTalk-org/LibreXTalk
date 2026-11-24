@@ -103,7 +103,9 @@ pub fn call(name: &str, args: &[String], ctx: &CallContext) -> Result<String, Xt
         "sqrt" => {
             let n = one_number(name, args)?;
             if n < 0.0 {
-                return Err(XtError::new("Can't take the square root of a negative number"));
+                return Err(XtError::new(
+                    "Can't take the square root of a negative number",
+                ));
             }
             Ok(format_number(n.sqrt()))
         }
@@ -115,7 +117,9 @@ pub fn call(name: &str, args: &[String], ctx: &CallContext) -> Result<String, Xt
         "ln" => {
             let n = one_number(name, args)?;
             if n <= 0.0 {
-                return Err(XtError::new("Can't take the logarithm of a number that is not positive"));
+                return Err(XtError::new(
+                    "Can't take the logarithm of a number that is not positive",
+                ));
             }
             Ok(format_number(n.ln()))
         }
@@ -179,7 +183,10 @@ pub fn call(name: &str, args: &[String], ctx: &CallContext) -> Result<String, Xt
             let n = one_number(name, args)?.trunc();
             match u32::try_from(n as i64).ok().and_then(char::from_u32) {
                 Some(c) => Ok(c.to_string()),
-                None => Err(XtError::new(format!("{} is not a character code", format_number(n)))),
+                None => Err(XtError::new(format!(
+                    "{} is not a character code",
+                    format_number(n)
+                ))),
             }
         }
         "chartonum" => {
