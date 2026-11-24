@@ -302,7 +302,7 @@ impl Interpreter {
                 let selector = self.pop_selector(shape)?;
                 let text = self.pop()?;
                 let rand = self.next_random();
-                let out = chunk::read(&text, kind, &self.item_delimiter, &selector, rand);
+                let out = chunk::read(&text, kind, &self.item_delimiter, &selector, rand)?;
                 self.push(out);
             }
             Op::Count(kind) => {

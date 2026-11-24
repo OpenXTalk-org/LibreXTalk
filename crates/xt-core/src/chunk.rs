@@ -9,9 +9,9 @@
 //! - Lines are separated by a line feed, items by the itemDelimiter, and
 //!   words by runs of whitespace.
 //! - The empty string has no pieces at all.
-//! - Reading past the end gives empty text (CHK-6). Writing past the end of
-//!   items or lines pads with delimiters. Writing past the end of words or
-//!   characters is an error.
+//! - Reading past the end is an error (CHK-6). Writing past the end of items
+//!   or lines pads with delimiters. Writing past the end of words or characters
+//!   is an error.
 
 use crate::ast::{ChunkKind, Ordinal, Placement};
 use crate::error::XtError;
@@ -108,17 +108,29 @@ fn resolve(sel: &Selector, n: usize, rand: u64) -> (i64, i64) {
     }
 }
 
-/// Read a chunk. Anything out of range gives empty text.
-pub fn read(text: &str, kind: ChunkKind, delim: &str, sel: &Selector, rand: u64) -> String {
+/// Read a chunk. An index or range that names no existing chunk is an error.
+pub fn read(
+    text: &str,
+    kind: ChunkKind,
+    delim: &str,
+    sel: &Selector,
+    rand: u64,
+) -> Result<String, XtError> {
     let sp = spans(text, kind, delim);
     let n = sp.len() as i64;
     let (a, b) = resolve(sel, sp.len(), rand);
-    let a = a.max(1);
-    let b = b.min(n);
-    if a > b {
-        return String::new();
+    if a < 1 || b < a || b > n {
+        let which = if a == b {
+            a.to_string()
+        } else {
+            format!("{a} to {b}")
+        };
+        return Err(XtError::new(format!(
+            "Chunk expression out of range: {} {which} of this text does not exist",
+            kind_name(kind)
+        )));
     }
-    text[sp[(a - 1) as usize].0..sp[(b - 1) as usize].1].to_string()
+    Ok(text[sp[(a - 1) as usize].0..sp[(b - 1) as usize].1].to_string())
 }
 
 fn kind_name(kind: ChunkKind) -> &'static str {

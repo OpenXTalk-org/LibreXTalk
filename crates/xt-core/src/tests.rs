@@ -528,15 +528,25 @@ fn ranges() {
     assert_eq!(run("put word 2 to 3 of \"a b c d\""), vec!["b c"]);
     assert_eq!(run("put item 2 to 3 of \"a,b,c,d\""), vec!["b,c"]);
     assert_eq!(run("put char 2 to 4 of \"hello\""), vec!["ell"]);
-    assert_eq!(run("put word 3 to 9 of \"a b c d\""), vec!["c d"]);
 }
 
 #[test]
 fn out_of_range_reads_are_empty() {
-    assert_eq!(run("put word 9 of \"a b\""), vec![""]);
-    assert_eq!(run("put word 0 of \"a b\""), vec![""]);
-    assert_eq!(run("put word 5 to 9 of \"a b c d\""), vec![""]);
-    assert_eq!(run("put word 3 to 2 of \"a b c d\""), vec![""]);
+    assert!(run_err(r#"put character 5 of "1234""#)
+        .message
+        .contains("Chunk expression out of range"));
+    assert!(run_err(r#"put word 9 of "a b""#)
+        .message
+        .contains("Chunk expression out of range"));
+    assert!(run_err(r#"put word 0 of "a b""#)
+        .message
+        .contains("Chunk expression out of range"));
+    assert!(run_err(r#"put word 5 to 9 of "a b c d""#)
+        .message
+        .contains("Chunk expression out of range"));
+    assert!(run_err(r#"put word 3 to 2 of "a b c d""#)
+        .message
+        .contains("Chunk expression out of range"));
 }
 
 #[test]
