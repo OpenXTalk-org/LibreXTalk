@@ -13,6 +13,7 @@ mod compile;
 mod error;
 mod interp;
 mod lexer;
+mod objects;
 mod parser;
 mod shell;
 

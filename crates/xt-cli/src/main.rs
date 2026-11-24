@@ -119,6 +119,9 @@ fn print_help() {
     println!("  put \"X\" into word 2 of s");
     println!("  add 5 to total");
     println!("  put shell(\"uname -m\")");
+    println!("  create button \"OK\"");
+    println!("  put the name of button 1");
+    println!("  create field \"msg\"; put \"hi\" into field \"msg\"");
     println!("  do \"sleep 2; date\" as bash      -- then: put it");
     println!("  put round(2.5) && length(\"hello\")");
     println!("  try");
@@ -133,6 +136,7 @@ fn print_help() {
     println!();
     println!("Prompt commands:");
     println!("  :vars        show all variables");
+    println!("  :objects     show the stacks, cards, and controls");
     println!("  :ast <line>  show how a line is parsed");
     println!("  :help        show this help");
     println!("  :quit        leave (Ctrl-D works too)");
@@ -196,7 +200,7 @@ fn history_path() -> Option<PathBuf> {
 }
 
 fn repl() {
-    println!("xt 0.0.6. Type :help for help, :quit to leave.");
+    println!("xt 0.0.7. Type :help for help, :quit to leave.");
 
     let mut interp = Interpreter::new();
     // At the prompt you are the one typing, so shell commands are allowed.
@@ -253,6 +257,10 @@ fn repl() {
                 ":quit" | ":q" => break,
                 ":help" => {
                     print_help();
+                    continue;
+                }
+                ":objects" => {
+                    print!("{}", interp.describe_objects());
                     continue;
                 }
                 ":vars" => {

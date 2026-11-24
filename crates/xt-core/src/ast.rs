@@ -48,6 +48,59 @@ pub enum Expr {
     },
     /// `the number of words in x`
     Count { kind: ChunkKind, of: Box<Expr> },
+    /// An object in a value position: `button 1`, `me`. A field gives its
+    /// text, and any other object gives its reference.
+    Object(ObjSpec),
+    /// `the label of button 1`
+    Prop { name: String, of: ObjSpec },
+    /// `the number of buttons of card 2`
+    ObjCount { kind: ObjKind, of: Option<ObjSpec> },
+}
+
+/// A kind of object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjKind {
+    Stack,
+    Background,
+    Card,
+    Group,
+    Button,
+    Field,
+    Scrollbar,
+    Image,
+    Graphic,
+}
+
+/// How to pick one object of a kind.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjSel {
+    /// A number or a name, decided when the script runs: `button 1`, `button "OK"`.
+    At(Box<Expr>),
+    /// `card id 12`
+    Id(Box<Expr>),
+    Ordinal(Ordinal),
+    /// `next card`
+    Next,
+    /// `previous card`
+    Prev,
+}
+
+/// Which object a script means.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObjSpec {
+    Me,
+    /// `the target`
+    Target,
+    /// `this card`
+    This(ObjKind),
+    Find {
+        kind: ObjKind,
+        sel: ObjSel,
+        /// The container, as in `button 1 of card 2`.
+        of: Option<Box<ObjSpec>>,
+    },
+    /// Any other expression that holds a reference, such as a variable.
+    Value(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,6 +133,8 @@ pub enum ChunkSel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     Var(String),
+    /// A field: `put "x" into field 1`.
+    Object(ObjSpec),
     Chunk {
         kind: ChunkKind,
         sel: ChunkSel,
@@ -159,6 +214,26 @@ pub enum StmtKind {
     Throw(Expr),
     /// `do "uname -m" as shell`
     Do { script: Expr, language: String },
+    /// `set the label of button 1 to "Go"`
+    SetObjProp {
+        prop: String,
+        target: ObjSpec,
+        value: Expr,
+    },
+    /// `create button "OK" in card 2`
+    Create {
+        kind: ObjKind,
+        name: Option<Expr>,
+        parent: Option<ObjSpec>,
+    },
+    /// `delete button 1`
+    DeleteObj(ObjSpec),
+    /// `go to card 2`
+    Go(ObjSpec),
+    /// `send mouseUp to button 1`
+    Send { message: Expr, target: ObjSpec },
+    /// `pass mouseUp`
+    Pass(String),
     /// `answer "Sure?" with "Yes" or "No"`
     Answer { prompt: Expr, buttons: Vec<Expr> },
     /// `ask "Name?" with "Anon"`

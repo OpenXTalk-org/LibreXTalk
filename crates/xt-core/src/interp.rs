@@ -13,11 +13,12 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::ast::{BinOp, ChunkKind, WaitUnit};
+use crate::ast::{BinOp, ChunkKind, ObjKind, Ordinal, Placement, WaitUnit};
 use crate::builtins;
 use crate::chunk::{self, Selector};
-use crate::compile::{compile_handler, Handler, Op, SelShape};
+use crate::compile::{compile_handler, Handler, ObjShape, Op, SelShape};
 use crate::error::XtError;
+use crate::objects::{kind_name, ObjId, World};
 use crate::parser::parse_script;
 use crate::shell;
 
@@ -90,6 +91,10 @@ struct Frame {
     tries: Vec<TryEntry>,
     /// A shell command this handler is waiting for.
     job: Option<shell::Job>,
+    /// The object whose script this handler is in, if any (`me`).
+    me: Option<ObjId>,
+    /// The object the message was first sent to (`the target`).
+    target: Option<ObjId>,
 }
 
 /// An open `try` block.
@@ -120,6 +125,8 @@ impl Frame {
             args: Vec::new(),
             tries: Vec::new(),
             job: None,
+            me: None,
+            target: None,
         }
     }
 }
@@ -137,6 +144,8 @@ pub struct Interpreter {
     item_delimiter: String,
     /// State for `any`, a simple xorshift generator.
     rng: u64,
+    /// The stacks, cards, and controls.
+    world: World,
 }
 
 impl Default for Interpreter {
@@ -147,7 +156,13 @@ impl Default for Interpreter {
 
 impl Interpreter {
     pub fn new() -> Self {
+        // Start with one stack holding one background and one card.
+        let mut world = World::default();
+        let stack = world.create_stack("Untitled");
+        world.current_stack = Some(stack);
+        world.current_card = world.first_card(stack);
         Interpreter {
+            world,
             handlers: HashMap::new(),
             globals: HashMap::new(),
             main_locals: HashMap::new(),
@@ -229,6 +244,9 @@ impl Interpreter {
                     }
                 },
             };
+            // Handlers in an object's script have their own line numbers, which
+            // mean nothing to the source being run, so they get none.
+            let attach_line = !self.frames.last().is_some_and(|f| f.me.is_some());
             // Move on before running the op, so jumps and waits resume correctly.
             self.frame_mut().pc += 1;
             match self.step(op, host) {
@@ -238,7 +256,7 @@ impl Interpreter {
                     if self.try_catch(&err) {
                         continue;
                     }
-                    return Err(err.with_line(line));
+                    return Err(if attach_line { err.with_line(line) } else { err });
                 }
             }
         }
@@ -420,6 +438,156 @@ impl Interpreter {
                     }
                 }
             }
+            Op::MeRef => {
+                let me = self
+                    .frames
+                    .last()
+                    .and_then(|f| f.me)
+                    .ok_or_else(|| XtError::new("'me' can only be used inside an object's script"))?;
+                let text = self.world.ref_string(me).ok_or_else(object_gone)?;
+                self.push(text);
+            }
+            Op::TargetRef => {
+                let target = self
+                    .frames
+                    .last()
+                    .and_then(|f| f.target)
+                    .ok_or_else(|| XtError::new("There is no target here"))?;
+                let text = self.world.ref_string(target).ok_or_else(object_gone)?;
+                self.push(text);
+            }
+            Op::ThisRef(kind) => {
+                let id = match kind {
+                    ObjKind::Card => self.world.current_card,
+                    ObjKind::Stack => self.world.current_stack,
+                    ObjKind::Background => self
+                        .world
+                        .current_card
+                        .and_then(|c| self.world.get(c))
+                        .and_then(|o| o.background),
+                    _ => None,
+                };
+                let id = id.ok_or_else(|| {
+                    XtError::new(format!("There is no current {}", kind_name(kind)))
+                })?;
+                let text = self.world.ref_string(id).unwrap_or_default();
+                self.push(text);
+            }
+            Op::FindObj {
+                kind,
+                shape,
+                has_of,
+            } => {
+                let operand = match shape {
+                    ObjShape::At | ObjShape::Id => Some(self.pop()?),
+                    _ => None,
+                };
+                let container = if has_of { Some(self.pop()?) } else { None };
+                let found = self.find_object(kind, shape, operand, container)?;
+                let text = self.world.ref_string(found).unwrap_or_default();
+                self.push(text);
+            }
+            Op::ObjValue => {
+                let text = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                let is_field = self
+                    .world
+                    .get(id)
+                    .is_some_and(|o| o.kind == ObjKind::Field);
+                if is_field {
+                    let value = self.world.get_prop(id, "text")?;
+                    self.push(value);
+                } else {
+                    self.push(text);
+                }
+            }
+            Op::ObjText => {
+                let text = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                self.require_field(id)?;
+                let value = self.world.get_prop(id, "text")?;
+                self.push(value);
+            }
+            Op::GetProp(name) => {
+                let text = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                let value = self.world.get_prop(id, &name)?;
+                self.push(value);
+            }
+            Op::SetObjProp(name) => {
+                let text = self.pop()?;
+                let value = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                if name == "script" {
+                    self.set_script(id, &value)?;
+                } else {
+                    self.world.set_prop(id, &name, &value)?;
+                }
+            }
+            Op::CountObjs { kind, has_of } => {
+                let container = if has_of { Some(self.pop()?) } else { None };
+                let n = if kind == ObjKind::Stack {
+                    self.world.stacks.len()
+                } else {
+                    let parent = self.container_for(kind, container)?;
+                    self.world.children_of_kind(parent, kind).len()
+                };
+                self.push(n.to_string());
+            }
+            Op::CreateObj {
+                kind,
+                has_name,
+                has_parent,
+            } => {
+                let parent = if has_parent { Some(self.pop()?) } else { None };
+                let name = if has_name {
+                    self.pop()?
+                } else {
+                    String::new()
+                };
+                let created = self.create_object(kind, &name, parent)?;
+                let text = self.world.ref_string(created).unwrap_or_default();
+                self.write_var("it", text);
+            }
+            Op::DeleteObj => {
+                let text = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                self.delete_object(id)?;
+            }
+            Op::GoTo => {
+                let text = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                let (new_ref, old_ref) = self.go_to(id)?;
+                self.push(new_ref);
+                self.push(old_ref);
+            }
+            Op::SendSystem(name) => {
+                let text = self.pop()?;
+                if !text.is_empty() {
+                    let id = self.world.lookup_ref(&text)?;
+                    self.send_message(id, &name, true)?;
+                }
+            }
+            Op::Send => {
+                let text = self.pop()?;
+                let name = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                self.send_message(id, &name, false)?;
+            }
+            Op::Pass(name) => self.pass_message(&name)?,
+            Op::PutObject(placement) => {
+                let text = self.pop()?;
+                let value = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                self.require_field(id)?;
+                let old = self.world.get_prop(id, "text")?;
+                let updated = match placement {
+                    Placement::Into => value,
+                    Placement::Before => format!("{value}{old}"),
+                    Placement::After => format!("{old}{value}"),
+                };
+                self.world.set_prop(id, "text", &updated)?;
+            }
             Op::Neg => {
                 let v = self.pop()?;
                 let n = to_number(&v)?;
@@ -543,9 +711,22 @@ impl Interpreter {
         }
         args.reverse();
 
-        let found = self.handlers.get(&name.to_lowercase()).cloned();
-        let handler = match found {
-            Some(h) => h,
+        // A message starts at the object whose script is running. From loose
+        // statements it starts at the current card, like the message box does.
+        let me = self.frames.last().and_then(|f| f.me);
+        let base = me.or(self.world.current_card);
+        let found = match base {
+            Some(start) => self.find_handler(start, name, None),
+            None => self
+                .handlers
+                .get(&name.to_lowercase())
+                .cloned()
+                .map(|h| (None, h)),
+        };
+        match found {
+            Some((owner, handler)) => {
+                self.push_handler_frame(handler, args, owner, base, wants_value)
+            }
             None => {
                 // `shell(command)` runs a command and waits for it.
                 if wants_value && name.eq_ignore_ascii_case("shell") {
@@ -579,26 +760,439 @@ impl Interpreter {
                     self.push(value);
                     return Ok(());
                 }
-                return Err(XtError::new(format!("Can't understand \"{name}\"")));
+                Err(XtError::new(format!("Can't understand \"{name}\"")))
             }
-        };
+        }
+    }
+
+    /// Start running a handler. `me` is the object whose script holds it, and
+    /// `target` is the object the message went to.
+    fn push_handler_frame(
+        &mut self,
+        handler: Rc<Handler>,
+        args: Vec<String>,
+        me: Option<ObjId>,
+        target: Option<ObjId>,
+        wants_value: bool,
+    ) -> Result<(), XtError> {
         if self.frames.len() >= MAX_DEPTH {
             return Err(XtError::new(format!(
                 "Too many nested handler calls. Is '{}' calling itself forever?",
                 handler.name
             )));
         }
-
         let mut frame = Frame::new(Rc::clone(&handler), false, wants_value, HashMap::new());
-        frame.args = args.clone();
         // Missing arguments are empty and extra ones are ignored (spec HND-4).
         for (i, param) in handler.params.iter().enumerate() {
             frame
                 .locals
                 .insert(param.to_lowercase(), args.get(i).cloned().unwrap_or_default());
         }
+        frame.args = args;
+        frame.me = me;
+        frame.target = target;
         self.frames.push(frame);
         Ok(())
+    }
+
+    /// Look for a handler along the path from `start`, then among the
+    /// engine-level handlers. With `after`, the search begins after that object.
+    fn find_handler(
+        &self,
+        start: ObjId,
+        name: &str,
+        after: Option<ObjId>,
+    ) -> Option<(Option<ObjId>, Rc<Handler>)> {
+        let lname = name.to_lowercase();
+        let mut remaining = self.world.path(start).into_iter();
+        if let Some(after) = after {
+            for obj in remaining.by_ref() {
+                if obj == after {
+                    break;
+                }
+            }
+        }
+        for obj in remaining {
+            if let Some(handler) = self.world.get(obj).and_then(|o| o.handlers.get(&lname)) {
+                return Some((Some(obj), Rc::clone(handler)));
+            }
+        }
+        self.handlers.get(&lname).map(|h| (None, Rc::clone(h)))
+    }
+
+    /// Send a message to an object and wait for the handler. A message nobody
+    /// handles is an error, unless it is a system message or `quiet` is set.
+    fn send_message(&mut self, target: ObjId, name: &str, quiet: bool) -> Result<(), XtError> {
+        match self.find_handler(target, name, None) {
+            Some((owner, handler)) => {
+                self.push_handler_frame(handler, Vec::new(), owner, Some(target), false)
+            }
+            None => {
+                if quiet || is_system_message(name) {
+                    Ok(())
+                } else {
+                    Err(XtError::new(format!("Can't understand \"{name}\"")))
+                }
+            }
+        }
+    }
+
+    /// `pass`: end this handler and send the message on to the objects after
+    /// the one whose script holds it.
+    fn pass_message(&mut self, name: &str) -> Result<(), XtError> {
+        let Some(frame) = self.frames.pop() else {
+            return Ok(());
+        };
+        let Frame {
+            me,
+            target,
+            args,
+            wants_value,
+            is_main,
+            locals,
+            ..
+        } = frame;
+        if is_main {
+            self.main_locals = locals;
+        }
+        if let (Some(owner), Some(target)) = (me, target) {
+            if let Some((new_owner, handler)) = self.find_handler(target, name, Some(owner)) {
+                return self.push_handler_frame(handler, args, new_owner, Some(target), wants_value);
+            }
+        }
+        // Nobody else handles it. A function that passed has no value.
+        if wants_value {
+            if let Some(caller) = self.frames.last_mut() {
+                caller.stack.push(String::new());
+            }
+        }
+        Ok(())
+    }
+
+    // ----- objects ---------------------------------------------------------
+
+    /// Where to look for objects of `kind`: the container named, or else the
+    /// current stack (for cards and backgrounds) or the current card.
+    fn container_for(&self, kind: ObjKind, container: Option<String>) -> Result<ObjId, XtError> {
+        if let Some(text) = container {
+            return self.world.lookup_ref(&text);
+        }
+        let default = match kind {
+            ObjKind::Background | ObjKind::Card => self.world.current_stack,
+            _ => self.world.current_card,
+        };
+        default.ok_or_else(|| XtError::new("There is no current card"))
+    }
+
+    fn find_object(
+        &mut self,
+        kind: ObjKind,
+        shape: ObjShape,
+        operand: Option<String>,
+        container: Option<String>,
+    ) -> Result<ObjId, XtError> {
+        if let (ObjShape::Id, Some(text)) = (shape, &operand) {
+            let n = to_number(text)?.trunc() as i64;
+            return self
+                .world
+                .by_numeric_id(n)
+                .filter(|id| self.world.get(*id).is_some_and(|o| o.kind == kind))
+                .ok_or_else(|| XtError::new(format!("There is no {} id {n}", kind_name(kind))));
+        }
+
+        let list: Vec<ObjId> = if kind == ObjKind::Stack {
+            self.world.stacks.clone()
+        } else {
+            let parent = self.container_for(kind, container)?;
+            self.world.children_of_kind(parent, kind)
+        };
+        let n = list.len();
+        let mut describe = String::new();
+        let picked: Option<ObjId> = match shape {
+            ObjShape::At => {
+                let text = operand.unwrap_or_default();
+                if let Some(number) = parse_num(&text) {
+                    let i = number.trunc() as i64;
+                    describe = text;
+                    if i >= 1 && (i as usize) <= n {
+                        Some(list[(i - 1) as usize])
+                    } else {
+                        None
+                    }
+                } else {
+                    describe = format!("\"{text}\"");
+                    self.world.first_named(&list, &text)
+                }
+            }
+            ObjShape::Ordinal(ordinal) => {
+                let index = match ordinal {
+                    Ordinal::Nth(k) => k,
+                    Ordinal::Last => n,
+                    Ordinal::Middle => n / 2 + 1,
+                    Ordinal::Any => {
+                        if n == 0 {
+                            0
+                        } else {
+                            (self.next_random() % n as u64) as usize + 1
+                        }
+                    }
+                };
+                describe = "in that position".to_string();
+                if n > 0 && index >= 1 && index <= n {
+                    Some(list[index - 1])
+                } else {
+                    None
+                }
+            }
+            ObjShape::Next | ObjShape::Prev => {
+                let current = match kind {
+                    ObjKind::Card => self.world.current_card,
+                    ObjKind::Stack => self.world.current_stack,
+                    ObjKind::Background => self
+                        .world
+                        .current_card
+                        .and_then(|c| self.world.get(c))
+                        .and_then(|o| o.background),
+                    _ => {
+                        return Err(XtError::new(
+                            "Only stacks, backgrounds, and cards can be next or previous",
+                        ))
+                    }
+                };
+                describe = "there".to_string();
+                match current.and_then(|c| list.iter().position(|x| *x == c)) {
+                    Some(pos) if n > 0 => {
+                        let index = if matches!(shape, ObjShape::Next) {
+                            (pos + 1) % n
+                        } else {
+                            (pos + n - 1) % n
+                        };
+                        Some(list[index])
+                    }
+                    _ => None,
+                }
+            }
+            ObjShape::Id => None,
+        };
+        picked.ok_or_else(|| XtError::new(format!("There is no {} {describe}", kind_name(kind))))
+    }
+
+    fn require_field(&self, id: ObjId) -> Result<(), XtError> {
+        match self.world.get(id) {
+            Some(o) if o.kind == ObjKind::Field => Ok(()),
+            Some(o) => Err(XtError::new(format!(
+                "You can only put text into a field, not a {}",
+                kind_name(o.kind)
+            ))),
+            None => Err(object_gone()),
+        }
+    }
+
+    fn create_object(
+        &mut self,
+        kind: ObjKind,
+        name: &str,
+        parent_ref: Option<String>,
+    ) -> Result<ObjId, XtError> {
+        match kind {
+            ObjKind::Stack => {
+                let stack = self.world.create_stack(name);
+                self.world.current_stack = Some(stack);
+                self.world.current_card = self.world.first_card(stack);
+                Ok(stack)
+            }
+            ObjKind::Card | ObjKind::Background => {
+                let stack = match parent_ref {
+                    Some(text) => self.world.lookup_ref(&text)?,
+                    None => self
+                        .world
+                        .current_stack
+                        .ok_or_else(|| XtError::new("There is no current stack"))?,
+                };
+                if self.world.get(stack).map(|o| o.kind) != Some(ObjKind::Stack) {
+                    return Err(XtError::new(format!(
+                        "A {} can only be made in a stack",
+                        kind_name(kind)
+                    )));
+                }
+                let created = self.world.create(kind, name, Some(stack));
+                if kind == ObjKind::Card {
+                    // A new card uses the background of the current card, or
+                    // else the first background of its stack.
+                    let background = self
+                        .world
+                        .current_card
+                        .filter(|c| self.world.stack_of(*c) == Some(stack))
+                        .and_then(|c| self.world.get(c))
+                        .and_then(|o| o.background)
+                        .or_else(|| {
+                            self.world
+                                .children_of_kind(stack, ObjKind::Background)
+                                .first()
+                                .copied()
+                        });
+                    if let Some(obj) = self.world.get_mut(created) {
+                        obj.background = background;
+                    }
+                    if Some(stack) == self.world.current_stack {
+                        self.world.current_card = Some(created);
+                    }
+                }
+                Ok(created)
+            }
+            _ => {
+                let parent = match parent_ref {
+                    Some(text) => self.world.lookup_ref(&text)?,
+                    None => self
+                        .world
+                        .current_card
+                        .ok_or_else(|| XtError::new("There is no current card"))?,
+                };
+                let parent_kind = self.world.get(parent).map(|o| o.kind);
+                if !matches!(
+                    parent_kind,
+                    Some(ObjKind::Card | ObjKind::Background | ObjKind::Group)
+                ) {
+                    return Err(XtError::new(
+                        "A control can only be made on a card, a background, or a group",
+                    ));
+                }
+                Ok(self.world.create(kind, name, Some(parent)))
+            }
+        }
+    }
+
+    fn delete_object(&mut self, id: ObjId) -> Result<(), XtError> {
+        let (kind, parent) = match self.world.get(id) {
+            Some(o) => (o.kind, o.parent),
+            None => return Err(object_gone()),
+        };
+        match kind {
+            ObjKind::Stack => {
+                if self.world.stacks.len() <= 1 {
+                    return Err(XtError::new("Can't delete the last stack"));
+                }
+                let was_current = self.world.current_stack == Some(id);
+                self.world.delete(id);
+                if was_current {
+                    let next = self.world.stacks.first().copied();
+                    self.world.current_stack = next;
+                    self.world.current_card = next.and_then(|s| self.world.first_card(s));
+                }
+            }
+            ObjKind::Card => {
+                let stack = parent.ok_or_else(object_gone)?;
+                let cards = self.world.children_of_kind(stack, ObjKind::Card);
+                if cards.len() <= 1 {
+                    return Err(XtError::new("Can't delete the last card of a stack"));
+                }
+                let was_current = self.world.current_card == Some(id);
+                let position = cards.iter().position(|c| *c == id).unwrap_or(0);
+                self.world.delete(id);
+                if was_current {
+                    let remaining = self.world.children_of_kind(stack, ObjKind::Card);
+                    let index = position.min(remaining.len().saturating_sub(1));
+                    self.world.current_card = remaining.get(index).copied();
+                }
+            }
+            ObjKind::Background => {
+                let stack = parent.ok_or_else(object_gone)?;
+                let in_use = self
+                    .world
+                    .children_of_kind(stack, ObjKind::Card)
+                    .iter()
+                    .any(|c| self.world.get(*c).is_some_and(|o| o.background == Some(id)));
+                if in_use {
+                    return Err(XtError::new("Can't delete a background that cards are using"));
+                }
+                self.world.delete(id);
+            }
+            _ => self.world.delete(id),
+        }
+        Ok(())
+    }
+
+    /// Make `id` (a card, or a stack's first card) the current card. Returns
+    /// the references of the new and the old card, or empty ones if nothing
+    /// changed, so the caller can send `closeCard` and `openCard`.
+    fn go_to(&mut self, id: ObjId) -> Result<(String, String), XtError> {
+        let kind = self.world.get(id).map(|o| o.kind).ok_or_else(object_gone)?;
+        let new_card = match kind {
+            ObjKind::Card => id,
+            ObjKind::Stack => self
+                .world
+                .first_card(id)
+                .ok_or_else(|| XtError::new("That stack has no cards"))?,
+            _ => return Err(XtError::new("You can only go to a card or a stack")),
+        };
+        let old = self.world.current_card;
+        self.world.current_stack = self.world.stack_of(new_card);
+        self.world.current_card = Some(new_card);
+        if old == Some(new_card) {
+            return Ok((String::new(), String::new()));
+        }
+        let new_ref = self.world.ref_string(new_card).unwrap_or_default();
+        let old_ref = old
+            .and_then(|o| self.world.ref_string(o))
+            .unwrap_or_default();
+        Ok((new_ref, old_ref))
+    }
+
+    /// Compile a script and install its handlers on an object.
+    fn set_script(&mut self, id: ObjId, text: &str) -> Result<(), XtError> {
+        let script = parse_script(text).map_err(|e| {
+            let place = e
+                .line
+                .map(|l| format!(" (script line {})", l + 1))
+                .unwrap_or_default();
+            XtError::new(format!("The script has an error{place}: {}", e.message))
+        })?;
+        if !script.main.is_empty() {
+            return Err(XtError::new("An object's script can only contain handlers"));
+        }
+        let mut table = HashMap::new();
+        for def in &script.handlers {
+            let handler = compile_handler(&def.name, &def.params, &def.body);
+            table.insert(def.name.to_lowercase(), Rc::new(handler));
+        }
+        match self.world.get_mut(id) {
+            Some(obj) => {
+                obj.handlers = table;
+                obj.props.insert("script".to_string(), text.to_string());
+                Ok(())
+            }
+            None => Err(object_gone()),
+        }
+    }
+
+    /// The stacks, cards, and controls as an indented list. The current stack
+    /// and card are marked with a star.
+    pub fn describe_objects(&self) -> String {
+        let mut out = String::new();
+        for &stack in &self.world.stacks {
+            self.describe_object(stack, 0, &mut out);
+        }
+        out
+    }
+
+    fn describe_object(&self, id: ObjId, depth: usize, out: &mut String) {
+        let Some(obj) = self.world.get(id) else {
+            return;
+        };
+        let current =
+            Some(id) == self.world.current_stack || Some(id) == self.world.current_card;
+        let name = obj.props.get("name").cloned().unwrap_or_default();
+        out.push_str(&format!(
+            "{}{} id {} \"{}\"{}\n",
+            "  ".repeat(depth),
+            kind_name(obj.kind),
+            obj.id,
+            name,
+            if current { " *" } else { "" }
+        ));
+        for &child in &obj.children {
+            self.describe_object(child, depth + 1, out);
+        }
     }
 
     fn do_return(&mut self) -> Result<(), XtError> {
@@ -806,4 +1400,36 @@ pub fn format_number(n: f64) -> String {
     }
     let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn object_gone() -> XtError {
+    XtError::new("That object no longer exists")
+}
+
+/// Messages the engine and backends send on their own. One that nobody
+/// handles is ignored instead of being an error.
+fn is_system_message(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "mousedown"
+            | "mouseup"
+            | "mouseenter"
+            | "mouseleave"
+            | "mousestilldown"
+            | "keydown"
+            | "keyup"
+            | "opencard"
+            | "closecard"
+            | "openstack"
+            | "closestack"
+            | "openbackground"
+            | "closebackground"
+            | "idle"
+            | "newcard"
+            | "newbutton"
+            | "newfield"
+            | "deletecard"
+            | "deletebutton"
+            | "deletefield"
+    )
 }

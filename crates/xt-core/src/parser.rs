@@ -10,6 +10,7 @@ use crate::builtins;
 use crate::error::XtError;
 use crate::interp::is_constant;
 use crate::lexer::{lex, Token, TokenKind};
+use crate::objects::kind_of_word;
 use crate::shell;
 
 /// Parse a whole script: handler definitions plus loose statements.
@@ -137,6 +138,37 @@ impl Parser {
 
     fn ordinal_at(&self, offset: usize) -> Option<Ordinal> {
         self.word_at(offset).and_then(ordinal_of)
+    }
+
+    /// A kind of object at this position, and whether the word was a plural.
+    fn object_kind_at(&self, offset: usize) -> Option<(ObjKind, bool)> {
+        self.word_at(offset).and_then(kind_of_word)
+    }
+
+    /// `first`, `last`, `next`, and the like, as a way to pick an object.
+    fn object_ordinal_at(&self, offset: usize) -> Option<ObjSel> {
+        let word = self.word_at(offset)?.to_lowercase();
+        match word.as_str() {
+            "next" => Some(ObjSel::Next),
+            "previous" | "prev" => Some(ObjSel::Prev),
+            _ => ordinal_of(&word).map(ObjSel::Ordinal),
+        }
+    }
+
+    /// Could the token at `offset` begin the number or name of an object?
+    fn starts_selector(&self, offset: usize) -> bool {
+        match self.tokens.get(self.pos + offset).map(|t| &t.kind) {
+            Some(TokenKind::Str(_)) | Some(TokenKind::Number(_)) => true,
+            Some(TokenKind::Op(o)) => o.as_str() == "(",
+            _ => false,
+        }
+    }
+
+    fn is_line_end_at(&self, offset: usize) -> bool {
+        matches!(
+            self.tokens.get(self.pos + offset).map(|t| &t.kind),
+            None | Some(TokenKind::Newline)
+        )
     }
 
     /// `of`, `in`, and `from` are interchangeable (spec CHK-10).
@@ -638,6 +670,9 @@ impl Parser {
             }
             "delete" => {
                 self.pos += 1;
+                if let Some(spec) = self.try_parse_object()? {
+                    return Ok(StmtKind::DeleteObj(spec));
+                }
                 let (target, line, col) = self.parse_container()?;
                 if matches!(target, Target::Chunk { .. }) {
                     Ok(StmtKind::Delete(target))
@@ -665,6 +700,79 @@ impl Parser {
                 }
                 let language = self.take_word()?.to_lowercase();
                 Ok(StmtKind::Do { script, language })
+            }
+            "create" => {
+                self.pos += 1;
+                let kind = match self.object_kind_at(0) {
+                    Some((kind, false)) => kind,
+                    _ => {
+                        return Err(self.err_here(
+                            "Expected a kind of object here: stack, background, card, group, button, field, scrollbar, image, or graphic",
+                        ))
+                    }
+                };
+                self.pos += 1;
+                let name = if self.is_line_end() || self.is_prep() {
+                    None
+                } else {
+                    Some(self.parse_primary()?)
+                };
+                let parent = if self.is_prep() {
+                    self.pos += 1;
+                    Some(self.parse_object_operand()?)
+                } else {
+                    None
+                };
+                Ok(StmtKind::Create { kind, name, parent })
+            }
+            "go" => {
+                self.pos += 1;
+                if self.is_word("to") {
+                    self.pos += 1;
+                }
+                // `go next`, `go first`: a card, picked by position
+                let bare = if self.object_kind_at(1).is_none() && self.is_line_end_at(1) {
+                    self.object_ordinal_at(0)
+                } else {
+                    None
+                };
+                let spec = match bare {
+                    Some(sel) => {
+                        self.pos += 1;
+                        ObjSpec::Find {
+                            kind: ObjKind::Card,
+                            sel,
+                            of: None,
+                        }
+                    }
+                    None => self.parse_object_operand()?,
+                };
+                Ok(StmtKind::Go(spec))
+            }
+            "send" => {
+                self.pos += 1;
+                let message = self.parse_expr()?;
+                if !self.is_word("to") {
+                    return Err(self.err_here("Expected 'to' here, as in: send mouseUp to button 1"));
+                }
+                self.pos += 1;
+                let target = self.parse_object_operand()?;
+                Ok(StmtKind::Send { message, target })
+            }
+            "pass" => {
+                self.pos += 1;
+                let name = self.take_word()?;
+                Ok(StmtKind::Pass(name))
+            }
+            "show" | "hide" => {
+                self.pos += 1;
+                let target = self.parse_object_operand()?;
+                let shown = if word == "show" { "true" } else { "false" };
+                Ok(StmtKind::SetObjProp {
+                    prop: "visible".to_string(),
+                    target,
+                    value: Expr::Literal(shown.to_string()),
+                })
             }
             "throw" => {
                 self.pos += 1;
@@ -707,7 +815,18 @@ impl Parser {
                 self.pos += 1;
                 let prop = self.take_word()?.to_lowercase();
                 if self.is_word("of") {
-                    return Err(self.err_here("Object properties are not supported yet"));
+                    self.pos += 1;
+                    let target = self.parse_object_operand()?;
+                    if !self.is_word("to") {
+                        return Err(self.err_here("Expected 'to' here"));
+                    }
+                    self.pos += 1;
+                    let value = self.parse_expr()?;
+                    return Ok(StmtKind::SetObjProp {
+                        prop,
+                        target,
+                        value,
+                    });
                 }
                 if !self.is_word("to") {
                     return Err(self.err_here("Expected 'to' here"));
@@ -784,7 +903,9 @@ impl Parser {
         let save = self.pos;
         let starts_chunk = matches!(self.try_parse_chunk(), Ok(Some(_)));
         self.pos = save;
-        if starts_chunk {
+        let starts_object = matches!(self.try_parse_object(), Ok(Some(_)));
+        self.pos = save;
+        if starts_chunk || starts_object {
             return Ok(StmtKind::Eval(self.parse_expr()?));
         }
         if let Some(name) = self.word_at(0).map(|w| w.to_string()) {
@@ -927,6 +1048,9 @@ impl Parser {
                 Ok(Expr::Literal(n))
             }
             TokenKind::Word(w) => {
+                if let Some(spec) = self.try_parse_object()? {
+                    return Ok(Expr::Object(spec));
+                }
                 if w.eq_ignore_ascii_case("the") && self.word_at(1).is_some() {
                     return self.parse_the();
                 }
@@ -956,6 +1080,81 @@ impl Parser {
             }
             _ => Err(XtError::at(tok.line, tok.col, "Expected a value here")),
         }
+    }
+
+    /// After `of` or `to`: an object, or any expression that holds a reference.
+    fn parse_object_operand(&mut self) -> Result<ObjSpec, XtError> {
+        if let Some(spec) = self.try_parse_object()? {
+            return Ok(spec);
+        }
+        Ok(ObjSpec::Value(Box::new(self.parse_primary()?)))
+    }
+
+    /// The container in `button 1 of card 2`, if there is one.
+    fn parse_object_of(&mut self) -> Result<Option<Box<ObjSpec>>, XtError> {
+        if self.is_prep() {
+            self.pos += 1;
+            return Ok(Some(Box::new(self.parse_object_operand()?)));
+        }
+        Ok(None)
+    }
+
+    /// At a word, try to read an object: `me`, `the target`, `this card`,
+    /// `first card`, `button "OK"`, `card id 3`. Returns `Ok(None)` with the
+    /// position unchanged if the words do not form one, because `card` and
+    /// `field` are ordinary variable names too.
+    fn try_parse_object(&mut self) -> Result<Option<ObjSpec>, XtError> {
+        if self.is_word("me") {
+            self.pos += 1;
+            return Ok(Some(ObjSpec::Me));
+        }
+        if self.is_word("the") && self.is_word_at(1, "target") {
+            self.pos += 2;
+            return Ok(Some(ObjSpec::Target));
+        }
+        // `the first card` is `first card`.
+        if self.is_word("the")
+            && self.object_ordinal_at(1).is_some()
+            && matches!(self.object_kind_at(2), Some((_, false)))
+        {
+            self.pos += 1;
+        }
+        // `this card`, `this stack`, `this background`
+        if self.is_word("this") {
+            if let Some((kind, false)) = self.object_kind_at(1) {
+                if matches!(kind, ObjKind::Card | ObjKind::Stack | ObjKind::Background) {
+                    self.pos += 2;
+                    return Ok(Some(ObjSpec::This(kind)));
+                }
+            }
+            return Ok(None);
+        }
+        // `first card`, `next card`, `last button`
+        if let Some(sel) = self.object_ordinal_at(0) {
+            if let Some((kind, false)) = self.object_kind_at(1) {
+                self.pos += 2;
+                let of = self.parse_object_of()?;
+                return Ok(Some(ObjSpec::Find { kind, sel, of }));
+            }
+            return Ok(None);
+        }
+        // `button "OK"`, `card 3`, `card id 12`
+        if let Some((kind, false)) = self.object_kind_at(0) {
+            let sel = if self.is_word_at(1, "id") && self.starts_selector(2) {
+                self.pos += 2;
+                Some(ObjSel::Id(Box::new(self.parse_primary()?)))
+            } else if self.starts_selector(1) {
+                self.pos += 1;
+                Some(ObjSel::At(Box::new(self.parse_primary()?)))
+            } else {
+                None
+            };
+            if let Some(sel) = sel {
+                let of = self.parse_object_of()?;
+                return Ok(Some(ObjSpec::Find { kind, sel, of }));
+            }
+        }
+        Ok(None)
     }
 
     /// At a word, try to read a chunk expression or a count. Returns
@@ -1048,6 +1247,19 @@ impl Parser {
             self.pos += 2;
             return self.parse_count();
         }
+        // `the number of cards`, `the number of buttons of card 2`
+        if self.is_word("number") && self.is_word_at(1, "of") {
+            if let Some((kind, true)) = self.object_kind_at(2) {
+                self.pos += 3;
+                let of = if self.is_prep() {
+                    self.pos += 1;
+                    Some(self.parse_object_operand()?)
+                } else {
+                    None
+                };
+                return Ok(Expr::ObjCount { kind, of });
+            }
+        }
         let name = self.word_at(0).unwrap_or("").to_lowercase();
         if name == "result" || name == "itemdelimiter" {
             self.pos += 1;
@@ -1072,8 +1284,14 @@ impl Parser {
                 });
             }
         }
+        // `the label of button 1`: a property of an object.
+        if self.is_word_at(1, "of") {
+            self.pos += 2;
+            let of = self.parse_object_operand()?;
+            return Ok(Expr::Prop { name, of });
+        }
         Err(self.err_here(format!(
-            "'the {name}' is not supported yet. Try the result, the itemDelimiter, the number of words, items, lines, or chars in ..., or a built-in function such as the length of ..."
+            "'the {name}' is not supported yet. Try the result, the itemDelimiter, the target, the number of ..., a property such as the name of button 1, or a built-in function such as the length of ..."
         )))
     }
 }
@@ -1122,6 +1340,7 @@ fn ordinal_of(word: &str) -> Option<Ordinal> {
 fn expr_to_target(e: Expr) -> Option<Target> {
     match e {
         Expr::Var(name) => Some(Target::Var(name)),
+        Expr::Object(spec) => Some(Target::Object(spec)),
         Expr::Chunk { kind, sel, of } => Some(Target::Chunk {
             kind,
             sel,
@@ -1135,6 +1354,7 @@ fn expr_to_target(e: Expr) -> Option<Target> {
 fn target_to_expr(target: &Target) -> Expr {
     match target {
         Target::Var(name) => Expr::Var(name.clone()),
+        Target::Object(spec) => Expr::Object(spec.clone()),
         Target::Chunk { kind, sel, of } => Expr::Chunk {
             kind: *kind,
             sel: sel.clone(),
@@ -1161,6 +1381,7 @@ fn check_not_constant(target: &Target, line: usize, col: usize) -> Result<(), Xt
     let mut current = target;
     loop {
         match current {
+            Target::Object(_) => return Ok(()),
             Target::Var(name) => {
                 if is_constant(name) {
                     return Err(XtError::at(

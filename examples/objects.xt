@@ -1,0 +1,13 @@
+-- Stacks, cards, buttons, fields, scripts, and messages.
+-- A quote inside a script needs the quote constant, so build the script first.
+create button "Greet"
+create field "Output"
+set the rect of button "Greet" to "20,20,120,50"
+
+put quote into q
+put "on mouseUp; put " & q & "Hello from" & q & " && the name of me into field " & q & "Output" & q & "; end mouseUp" into tScript
+set the script of button "Greet" to tScript
+
+send mouseUp to button "Greet"
+put field "Output"
+put "Buttons on this card:" && the number of buttons

@@ -71,6 +71,50 @@ pub enum Op {
     TryEnd,
     /// Pop a value and raise it as an error.
     Throw,
+    /// Push the reference to `me`.
+    MeRef,
+    /// Push the reference to `the target`.
+    TargetRef,
+    /// Push the reference to `this card`, `this stack`, or `this background`.
+    ThisRef(ObjKind),
+    /// Pop the number, name, or id (for `At` and `Id`) and then the container
+    /// reference (if `has_of`), and push the reference to the object found.
+    FindObj {
+        kind: ObjKind,
+        shape: ObjShape,
+        has_of: bool,
+    },
+    /// Pop a reference. Push a field's text, or the reference itself for any
+    /// other kind of object.
+    ObjValue,
+    /// Pop a reference to a field and push its text.
+    ObjText,
+    /// Pop a reference and push one of its properties.
+    GetProp(String),
+    /// Pop a reference and then a value, and set a property.
+    SetObjProp(String),
+    /// Count the objects of a kind. Pops the container reference if `has_of`.
+    CountObjs { kind: ObjKind, has_of: bool },
+    /// Make an object. Pops the parent reference, then the name, if present.
+    CreateObj {
+        kind: ObjKind,
+        has_name: bool,
+        has_parent: bool,
+    },
+    /// Pop a reference and delete the object.
+    DeleteObj,
+    /// Pop a reference, change the current card, and push the references of
+    /// the new and then the old card (empty if nothing changed).
+    GoTo,
+    /// Pop a reference and a message name, and send the message.
+    Send,
+    /// Pop a reference and send the named message to it, ignoring it if
+    /// nobody handles it. Does nothing for an empty reference.
+    SendSystem(String),
+    /// End this handler and send the message on to the next object in the path.
+    Pass(String),
+    /// Pop a reference to a field and a value, and put the value into the field.
+    PutObject(Placement),
     /// Pop a script and run it with the named shell. The handler pauses until
     /// the command finishes, but the host keeps running. The output goes to
     /// `it` and the exit status to `the result`.
@@ -80,6 +124,17 @@ pub enum Op {
     /// Pop a default (if there is one) and a prompt, ask the host for text,
     /// and store the reply in `it`.
     Ask { has_default: bool },
+}
+
+/// How an object is picked, and so which operands it takes from the stack.
+#[derive(Debug, Clone, Copy)]
+pub enum ObjShape {
+    /// A number or a name, decided when the script runs.
+    At,
+    Id,
+    Ordinal(Ordinal),
+    Next,
+    Prev,
 }
 
 /// How a chunk is selected, and so how many operands it takes from the stack.
@@ -270,12 +325,74 @@ impl Compiler {
                 self.emit(Op::SetProp(prop.clone()));
             }
             StmtKind::Delete(target) => {
-                let (name, steps) = flatten_target(target);
-                let shapes = self.chunk_operands(&steps);
-                self.emit(Op::DeleteChunk {
-                    name,
-                    steps: shapes,
+                let (base, steps) = flatten_target(target);
+                match base {
+                    Base::Var(name) => {
+                        let shapes = self.chunk_operands(&steps);
+                        self.emit(Op::DeleteChunk {
+                            name,
+                            steps: shapes,
+                        });
+                    }
+                    Base::Object(spec) => {
+                        // Read the field's text, delete from it, and write it back.
+                        let ref_var = self.hidden("ref");
+                        let text_var = self.hidden("text");
+                        self.obj_spec(spec);
+                        self.emit(Op::Store(ref_var.clone()));
+                        self.emit(Op::Load(ref_var.clone()));
+                        self.emit(Op::ObjText);
+                        self.emit(Op::Store(text_var.clone()));
+                        let shapes = self.chunk_operands(&steps);
+                        self.emit(Op::DeleteChunk {
+                            name: text_var.clone(),
+                            steps: shapes,
+                        });
+                        self.emit(Op::Load(text_var));
+                        self.emit(Op::Load(ref_var));
+                        self.emit(Op::PutObject(Placement::Into));
+                    }
+                }
+            }
+            StmtKind::SetObjProp {
+                prop,
+                target,
+                value,
+            } => {
+                self.expr(value);
+                self.obj_spec(target);
+                self.emit(Op::SetObjProp(prop.clone()));
+            }
+            StmtKind::Create { kind, name, parent } => {
+                if let Some(n) = name {
+                    self.expr(n);
+                }
+                if let Some(p) = parent {
+                    self.obj_spec(p);
+                }
+                self.emit(Op::CreateObj {
+                    kind: *kind,
+                    has_name: name.is_some(),
+                    has_parent: parent.is_some(),
                 });
+            }
+            StmtKind::DeleteObj(spec) => {
+                self.obj_spec(spec);
+                self.emit(Op::DeleteObj);
+            }
+            StmtKind::Go(spec) => {
+                self.obj_spec(spec);
+                self.emit(Op::GoTo);
+                self.emit(Op::SendSystem("closeCard".to_string()));
+                self.emit(Op::SendSystem("openCard".to_string()));
+            }
+            StmtKind::Send { message, target } => {
+                self.expr(message);
+                self.obj_spec(target);
+                self.emit(Op::Send);
+            }
+            StmtKind::Pass(name) => {
+                self.emit(Op::Pass(name.clone()));
             }
             StmtKind::Try {
                 body,
@@ -352,23 +469,91 @@ impl Compiler {
         shapes
     }
 
-    /// Store the value on top of the stack into a variable or a chunk of one.
+    /// Store the value on top of the stack into a variable, a field, or a
+    /// chunk of one of them.
     fn put_target(&mut self, placement: Placement, target: &Target) {
-        let (name, steps) = flatten_target(target);
-        if steps.is_empty() {
-            match placement {
-                Placement::Into => self.emit(Op::Store(name)),
-                Placement::Before => self.emit(Op::StoreBefore(name)),
-                Placement::After => self.emit(Op::StoreAfter(name)),
-            };
-            return;
+        let (base, steps) = flatten_target(target);
+        match base {
+            Base::Var(name) => {
+                if steps.is_empty() {
+                    match placement {
+                        Placement::Into => self.emit(Op::Store(name)),
+                        Placement::Before => self.emit(Op::StoreBefore(name)),
+                        Placement::After => self.emit(Op::StoreAfter(name)),
+                    };
+                    return;
+                }
+                let shapes = self.chunk_operands(&steps);
+                self.emit(Op::PutChunk {
+                    name,
+                    steps: shapes,
+                    placement,
+                });
+            }
+            Base::Object(spec) => {
+                if steps.is_empty() {
+                    self.obj_spec(spec);
+                    self.emit(Op::PutObject(placement));
+                    return;
+                }
+                // Read the field's text, put into a chunk of it, and write it back.
+                let ref_var = self.hidden("ref");
+                let text_var = self.hidden("text");
+                self.obj_spec(spec);
+                self.emit(Op::Store(ref_var.clone()));
+                self.emit(Op::Load(ref_var.clone()));
+                self.emit(Op::ObjText);
+                self.emit(Op::Store(text_var.clone()));
+                let shapes = self.chunk_operands(&steps);
+                self.emit(Op::PutChunk {
+                    name: text_var.clone(),
+                    steps: shapes,
+                    placement,
+                });
+                self.emit(Op::Load(text_var));
+                self.emit(Op::Load(ref_var));
+                self.emit(Op::PutObject(Placement::Into));
+            }
         }
-        let shapes = self.chunk_operands(&steps);
-        self.emit(Op::PutChunk {
-            name,
-            steps: shapes,
-            placement,
-        });
+    }
+
+    /// Push the reference to the object a script means.
+    fn obj_spec(&mut self, spec: &ObjSpec) {
+        match spec {
+            ObjSpec::Me => {
+                self.emit(Op::MeRef);
+            }
+            ObjSpec::Target => {
+                self.emit(Op::TargetRef);
+            }
+            ObjSpec::This(kind) => {
+                self.emit(Op::ThisRef(*kind));
+            }
+            ObjSpec::Find { kind, sel, of } => {
+                if let Some(container) = of {
+                    self.obj_spec(container);
+                }
+                let shape = match sel {
+                    ObjSel::At(e) => {
+                        self.expr(e);
+                        ObjShape::At
+                    }
+                    ObjSel::Id(e) => {
+                        self.expr(e);
+                        ObjShape::Id
+                    }
+                    ObjSel::Ordinal(o) => ObjShape::Ordinal(*o),
+                    ObjSel::Next => ObjShape::Next,
+                    ObjSel::Prev => ObjShape::Prev,
+                };
+                self.emit(Op::FindObj {
+                    kind: *kind,
+                    shape,
+                    has_of: of.is_some(),
+                });
+            }
+            ObjSpec::Value(e) => self.expr(e),
+        }
     }
 
     /// Before jumping out of a loop, close the `try` blocks opened inside it.
@@ -551,18 +736,42 @@ impl Compiler {
                 self.expr(of);
                 self.emit(Op::Count(*kind));
             }
+            Expr::Object(spec) => {
+                self.obj_spec(spec);
+                self.emit(Op::ObjValue);
+            }
+            Expr::Prop { name, of } => {
+                self.obj_spec(of);
+                self.emit(Op::GetProp(name.clone()));
+            }
+            Expr::ObjCount { kind, of } => {
+                if let Some(o) = of {
+                    self.obj_spec(o);
+                }
+                self.emit(Op::CountObjs {
+                    kind: *kind,
+                    has_of: of.is_some(),
+                });
+            }
         }
     }
 }
 
-/// Split a target into its variable and its chunk steps, with the step
-/// nearest the variable first.
-fn flatten_target(target: &Target) -> (String, Vec<(ChunkKind, &ChunkSel)>) {
+/// What a chunk of a target is a chunk of.
+enum Base<'a> {
+    Var(String),
+    Object(&'a ObjSpec),
+}
+
+/// Split a target into what it is based on (a variable or a field) and its
+/// chunk steps, with the step nearest the base first.
+fn flatten_target(target: &Target) -> (Base<'_>, Vec<(ChunkKind, &ChunkSel)>) {
     let mut steps = Vec::new();
     let mut current = target;
-    let name = loop {
+    let base = loop {
         match current {
-            Target::Var(n) => break n.clone(),
+            Target::Var(n) => break Base::Var(n.clone()),
+            Target::Object(spec) => break Base::Object(spec),
             Target::Chunk { kind, sel, of } => {
                 steps.push((*kind, sel));
                 current = &**of;
@@ -570,5 +779,5 @@ fn flatten_target(target: &Target) -> (String, Vec<(ChunkKind, &ChunkSel)>) {
         }
     };
     steps.reverse();
-    (name, steps)
+    (base, steps)
 }

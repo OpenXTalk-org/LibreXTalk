@@ -1115,3 +1115,316 @@ mod shell_tests {
         assert_eq!(run(script), vec!["/127"]);
     }
 }
+
+// ----- the object model ------------------------------------------------------
+
+#[test]
+fn a_new_engine_has_one_stack_with_one_card() {
+    assert_eq!(run("put the number of stacks"), vec!["1"]);
+    assert_eq!(run("put the number of cards"), vec!["1"]);
+    assert_eq!(run("put the number of backgrounds"), vec!["1"]);
+    assert_eq!(run("put the name of this stack"), vec!["Untitled"]);
+    assert_eq!(run("put the number of this card"), vec!["1"]);
+}
+
+#[test]
+fn the_object_tree_can_be_listed() {
+    let interp = Interpreter::new();
+    let listing = interp.describe_objects();
+    assert!(listing.contains("stack id 1 \"Untitled\" *"));
+    assert!(listing.contains("card id 3 \"\" *"));
+}
+
+#[test]
+fn creating_and_reading_controls() {
+    assert_eq!(run("create button \"OK\"\nput it"), vec!["button id 4"]);
+    let script = "create button \"OK\"\nput the name of button 1\nput the number of buttons";
+    assert_eq!(run(script), vec!["OK", "1"]);
+    assert_eq!(
+        run("create button \"OK\"\nput the name of button id 4"),
+        vec!["OK"]
+    );
+}
+
+#[test]
+fn objects_by_number_name_and_position() {
+    let script = r#"
+create button "A"
+create button "B"
+put the name of button 2
+put the name of button "A"
+put the name of the first button
+put the name of last button
+"#;
+    assert_eq!(run(script), vec!["B", "A", "A", "B"]);
+}
+
+#[test]
+fn a_field_is_a_container() {
+    let script = r#"
+create field "msg"
+put "hello world" into field "msg"
+put field "msg"
+put word 2 of field "msg"
+put the text of field 1
+put "big" before field "msg"
+put field "msg"
+put "X" into word 2 of field "msg"
+put field 1
+"#;
+    assert_eq!(
+        run(script),
+        vec!["hello world", "world", "hello world", "bighello world", "bighello X"]
+    );
+}
+
+#[test]
+fn arithmetic_and_delete_work_on_fields() {
+    let script = "create field \"n\"\nput 5 into field \"n\"\nadd 2 to field \"n\"\nput field \"n\"";
+    assert_eq!(run(script), vec!["7"]);
+    let script = "create field \"f\"\nput \"a b c\" into field \"f\"\ndelete word 2 of field \"f\"\nput field \"f\"";
+    assert_eq!(run(script), vec!["a c"]);
+}
+
+#[test]
+fn only_fields_hold_text() {
+    let err = run_err("create button \"B\"\nput \"x\" into button 1");
+    assert!(err.message.contains("only put text into a field"));
+}
+
+#[test]
+fn rectangles() {
+    let script = r#"
+create button "B"
+set the rect of button 1 to "10,20,110,50"
+put the width of button 1
+put the height of button 1
+put the left of button 1
+set the left of button 1 to 50
+put the rect of button 1
+set the width of button 1 to 40
+put the rect of button 1
+set the loc of button 1 to "100,100"
+put the rect of button 1
+"#;
+    assert_eq!(
+        run(script),
+        vec!["100", "30", "10", "50,20,150,50", "50,20,90,50", "80,85,120,115"]
+    );
+}
+
+#[test]
+fn show_hide_and_boolean_properties() {
+    let script = "create button \"B\"\nput the visible of button 1\nhide button 1\nput the visible of button 1\nshow button 1\nput the visible of button 1";
+    assert_eq!(run(script), vec!["true", "false", "true"]);
+    let err = run_err("create button \"B\"\nset the visible of button 1 to maybe");
+    assert!(err.message.contains("true or false"));
+}
+
+#[test]
+fn custom_properties() {
+    let script = "create button \"B\"\nput the colour of button 1 & \"|\"\nset the colour of button 1 to red\nput the colour of button 1";
+    assert_eq!(run(script), vec!["|", "red"]);
+}
+
+#[test]
+fn some_properties_are_read_only() {
+    assert!(run_err("set the id of this card to 5")
+        .message
+        .contains("can't be changed"));
+    assert_eq!(
+        run("create button \"B\"\nput the id of button 1 > 0"),
+        vec!["true"]
+    );
+    assert_eq!(run("create button \"B\"\nput the number of button 1"), vec!["1"]);
+}
+
+#[test]
+fn objects_inside_other_objects() {
+    let script = r#"
+create card
+create button "Two"
+go to card 1
+put the name of button 1 of card 2
+put the number of buttons of card 2
+put the number of buttons
+"#;
+    assert_eq!(run(script), vec!["Two", "1", "0"]);
+}
+
+#[test]
+fn an_object_reference_can_be_kept_in_a_variable() {
+    let script = "create button \"A\"\nput it into r\nset the name of r to \"Z\"\nput the name of button 1";
+    assert_eq!(run(script), vec!["Z"]);
+}
+
+#[test]
+fn moving_between_cards() {
+    let script = r#"
+create card
+put the number of cards
+put the number of this card
+go to card 1
+put the number of this card
+go next
+put the number of this card
+go previous
+put the number of this card
+go last
+put the number of this card
+go first
+put the number of this card
+"#;
+    assert_eq!(run(script), vec!["2", "2", "1", "2", "1", "2", "1"]);
+}
+
+#[test]
+fn going_to_a_card_sends_close_and_open_messages() {
+    let script = r#"
+create card
+set the script of card 1 to "on closeCard; put leaving; end closeCard"
+set the script of card 2 to "on openCard; put arriving; end openCard"
+go to card 1
+go to card 2
+"#;
+    assert_eq!(run(script), vec!["leaving", "arriving"]);
+}
+
+#[test]
+fn several_stacks() {
+    let script = r#"
+create stack "Second"
+put the name of this stack
+put the number of stacks
+go to stack "Untitled"
+put the name of this stack
+put the number of this card
+"#;
+    assert_eq!(run(script), vec!["Second", "2", "Untitled", "1"]);
+}
+
+#[test]
+fn deleting_objects() {
+    let script = "create button \"A\"\ncreate button \"B\"\ndelete button 1\nput the number of buttons\nput the name of button 1";
+    assert_eq!(run(script), vec!["1", "B"]);
+    assert!(run_err("delete card 1").message.contains("last card"));
+    assert_eq!(
+        run("create card\ndelete card 2\nput the number of this card"),
+        vec!["1"]
+    );
+    let err = run_err("create button \"A\"\nput it into r\ndelete button 1\nput the name of r");
+    assert!(err.message.contains("no longer exists"));
+}
+
+#[test]
+fn object_errors() {
+    assert!(run_err("put the name of button 9")
+        .message
+        .contains("There is no button"));
+    assert!(run_err("put the name of x")
+        .message
+        .contains("Expected an object"));
+    assert!(run_err("create button \"A\" in card 9")
+        .message
+        .contains("There is no card"));
+}
+
+// ----- object scripts and messages -------------------------------------------
+
+#[test]
+fn a_button_script_handles_a_message() {
+    let script = r#"
+create button "OK"
+set the script of button 1 to "on mouseUp; put clicked; end mouseUp"
+send mouseUp to button 1
+"#;
+    assert_eq!(run(script), vec!["clicked"]);
+    assert_eq!(
+        run("create button \"OK\"\nset the script of button 1 to \"on mouseUp; put clicked; end mouseUp\"\nput the script of button 1"),
+        vec!["on mouseUp; put clicked; end mouseUp"]
+    );
+}
+
+#[test]
+fn a_message_travels_up_the_path() {
+    let script = r#"
+create button "OK"
+set the script of this card to "on mouseUp; put handledbycard; end mouseUp"
+send mouseUp to button 1
+"#;
+    assert_eq!(run(script), vec!["handledbycard"]);
+}
+
+#[test]
+fn pass_sends_the_message_on() {
+    let script = r#"
+create button "OK"
+set the script of this card to "on mouseUp; put second; end mouseUp"
+set the script of button 1 to "on mouseUp; put first; pass mouseUp; end mouseUp"
+send mouseUp to button 1
+"#;
+    assert_eq!(run(script), vec!["first", "second"]);
+    let script = r#"
+create button "OK"
+set the script of button 1 to "on mouseUp; put first; pass mouseUp; put never; end mouseUp"
+send mouseUp to button 1
+"#;
+    assert_eq!(run(script), vec!["first"]);
+}
+
+#[test]
+fn me_and_the_target() {
+    let script = r#"
+create button "OK"
+set the script of this card to "on mouseUp; put the name of the target; end mouseUp"
+send mouseUp to button "OK"
+"#;
+    assert_eq!(run(script), vec!["OK"]);
+    let script = r#"
+create button "OK"
+set the script of button 1 to "on mouseUp; put the name of me; end mouseUp"
+send mouseUp to button 1
+"#;
+    assert_eq!(run(script), vec!["OK"]);
+    assert!(run_err("put the name of me").message.contains("'me'"));
+}
+
+#[test]
+fn engine_level_handlers_are_the_last_stop() {
+    let script = "on hello\n  put hi\nend hello\ncreate button \"OK\"\nsend hello to button 1";
+    assert_eq!(run(script), vec!["hi"]);
+}
+
+#[test]
+fn unhandled_messages() {
+    let script = "create button \"OK\"\nsend mouseUp to button 1\nput done";
+    assert_eq!(run(script), vec!["done"]);
+    let err = run_err("create button \"OK\"\nsend nosuchmessage to button 1");
+    assert!(err.message.contains("Can't understand"));
+}
+
+#[test]
+fn a_script_can_call_a_handler_further_up() {
+    let script = r#"
+create button "OK"
+set the script of this card to "on helper; put helped; end helper"
+set the script of button 1 to "on mouseUp; helper; end mouseUp"
+send mouseUp to button 1
+helper
+"#;
+    assert_eq!(run(script), vec!["helped", "helped"]);
+}
+
+#[test]
+fn an_object_script_can_define_a_function() {
+    let script = "set the script of this card to \"function double n; return n * 2; end double\"\nput double(4)";
+    assert_eq!(run(script), vec!["8"]);
+}
+
+#[test]
+fn script_errors_are_reported_when_the_script_is_set() {
+    let err = run_err("set the script of this card to \"on foo; put 1\"");
+    assert!(err.message.contains("script has an error"));
+    let err = run_err("set the script of this card to \"put 1\"");
+    assert!(err.message.contains("only contain handlers"));
+}
