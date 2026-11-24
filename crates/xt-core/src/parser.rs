@@ -117,7 +117,8 @@ impl Parser {
     }
 
     fn is_word(&self, word: &str) -> bool {
-        self.word_at(0).is_some_and(|w| w.eq_ignore_ascii_case(word))
+        self.word_at(0)
+            .is_some_and(|w| w.eq_ignore_ascii_case(word))
     }
 
     fn is_op(&self, op: &str) -> bool {
@@ -270,8 +271,10 @@ impl Parser {
         if self.at_end() {
             return Err(self.incomplete(format!("Missing 'end {what}'")));
         }
-        let found =
-            self.is_word("end") && self.word_at(1).is_some_and(|w| w.eq_ignore_ascii_case(what));
+        let found = self.is_word("end")
+            && self
+                .word_at(1)
+                .is_some_and(|w| w.eq_ignore_ascii_case(what));
         if found {
             self.pos += 2;
             Ok(())
@@ -463,7 +466,9 @@ impl Parser {
             self.pos += 1;
             let (kind, block) = self.parse_if_tail()?;
             if block {
-                return Err(self.err_here("Use the one-line form here, or put this 'if' on its own lines"));
+                return Err(
+                    self.err_here("Use the one-line form here, or put this 'if' on its own lines")
+                );
             }
             return Ok(kind);
         }
@@ -559,7 +564,9 @@ impl Parser {
                 self.pos += 1;
                 if self.is_word("repeat") {
                     if self.loop_depth == 0 {
-                        return Err(self.err_here("'exit repeat' can only be used inside a repeat loop"));
+                        return Err(
+                            self.err_here("'exit repeat' can only be used inside a repeat loop")
+                        );
                     }
                     self.pos += 1;
                     Ok(StmtKind::Exit(ExitKind::Repeat))
@@ -582,7 +589,9 @@ impl Parser {
                     return Err(self.err_here("Expected 'repeat' after 'next'"));
                 }
                 if self.loop_depth == 0 {
-                    return Err(self.err_here("'next repeat' can only be used inside a repeat loop"));
+                    return Err(
+                        self.err_here("'next repeat' can only be used inside a repeat loop")
+                    );
                 }
                 self.pos += 1;
                 Ok(StmtKind::NextRepeat)
@@ -665,7 +674,11 @@ impl Parser {
                 }
                 self.pos += 1;
                 let operand = self.parse_expr()?;
-                let op = if word == "multiply" { BinOp::Mul } else { BinOp::Div };
+                let op = if word == "multiply" {
+                    BinOp::Mul
+                } else {
+                    BinOp::Div
+                };
                 Ok(arithmetic_put(target, op, operand))
             }
             "delete" => {
@@ -753,7 +766,9 @@ impl Parser {
                 self.pos += 1;
                 let message = self.parse_expr()?;
                 if !self.is_word("to") {
-                    return Err(self.err_here("Expected 'to' here, as in: send mouseUp to button 1"));
+                    return Err(
+                        self.err_here("Expected 'to' here, as in: send mouseUp to button 1")
+                    );
                 }
                 self.pos += 1;
                 let target = self.parse_object_operand()?;
@@ -810,7 +825,9 @@ impl Parser {
             "set" => {
                 self.pos += 1;
                 if !self.is_word("the") {
-                    return Err(self.err_here("Expected 'the' here, as in: set the itemDelimiter to \";\""));
+                    return Err(
+                        self.err_here("Expected 'the' here, as in: set the itemDelimiter to \";\"")
+                    );
                 }
                 self.pos += 1;
                 let prop = self.take_word()?.to_lowercase();
@@ -948,7 +965,8 @@ impl Parser {
                 args.push(first);
                 while !self.args_done(closer) {
                     if !self.starts_plain_operand(0) || self.operator_at(0) {
-                        return Err(self.err_here("Separate arguments with spaces or with commas, not both"));
+                        return Err(self
+                            .err_here("Separate arguments with spaces or with commas, not both"));
                     }
                     args.push(self.parse_primary()?);
                 }

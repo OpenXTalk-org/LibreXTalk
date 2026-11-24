@@ -241,12 +241,7 @@ fn removal_range(
 
 /// Delete the chunk named by `path` from `base`. A chunk that does not exist
 /// is ignored. The path starts with the chunk nearest the variable.
-pub fn delete(
-    base: &str,
-    path: &[(ChunkKind, Selector)],
-    delim: &str,
-    rand: u64,
-) -> String {
+pub fn delete(base: &str, path: &[(ChunkKind, Selector)], delim: &str, rand: u64) -> String {
     let Some((first, rest)) = path.split_first() else {
         return base.to_string();
     };

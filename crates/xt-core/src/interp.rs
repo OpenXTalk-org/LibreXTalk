@@ -182,7 +182,8 @@ impl Interpreter {
         let script = parse_script(src)?;
         for def in &script.handlers {
             let handler = compile_handler(&def.name, &def.params, &def.body);
-            self.handlers.insert(def.name.to_lowercase(), Rc::new(handler));
+            self.handlers
+                .insert(def.name.to_lowercase(), Rc::new(handler));
         }
         if !script.main.is_empty() {
             let handler = compile_handler("<main>", &[], &script.main);
@@ -256,7 +257,11 @@ impl Interpreter {
                     if self.try_catch(&err) {
                         continue;
                     }
-                    return Err(if attach_line { err.with_line(line) } else { err });
+                    return Err(if attach_line {
+                        err.with_line(line)
+                    } else {
+                        err
+                    });
                 }
             }
         }
@@ -319,12 +324,10 @@ impl Interpreter {
                 let value = self.pop()?;
                 let base = self.stored(&name);
                 let rand = self.next_random();
-                let path: Vec<(ChunkKind, Selector)> = steps
-                    .iter()
-                    .map(|(kind, _)| *kind)
-                    .zip(selectors)
-                    .collect();
-                let updated = chunk::put(&base, &path, placement, &value, &self.item_delimiter, rand)?;
+                let path: Vec<(ChunkKind, Selector)> =
+                    steps.iter().map(|(kind, _)| *kind).zip(selectors).collect();
+                let updated =
+                    chunk::put(&base, &path, placement, &value, &self.item_delimiter, rand)?;
                 self.write_var(&name, updated);
             }
             Op::Store(name) => {
@@ -354,11 +357,8 @@ impl Interpreter {
                 selectors.reverse();
                 let base = self.stored(&name);
                 let rand = self.next_random();
-                let path: Vec<(ChunkKind, Selector)> = steps
-                    .iter()
-                    .map(|(kind, _)| *kind)
-                    .zip(selectors)
-                    .collect();
+                let path: Vec<(ChunkKind, Selector)> =
+                    steps.iter().map(|(kind, _)| *kind).zip(selectors).collect();
                 let updated = chunk::delete(&base, &path, &self.item_delimiter, rand);
                 self.write_var(&name, updated);
             }
@@ -439,11 +439,9 @@ impl Interpreter {
                 }
             }
             Op::MeRef => {
-                let me = self
-                    .frames
-                    .last()
-                    .and_then(|f| f.me)
-                    .ok_or_else(|| XtError::new("'me' can only be used inside an object's script"))?;
+                let me = self.frames.last().and_then(|f| f.me).ok_or_else(|| {
+                    XtError::new("'me' can only be used inside an object's script")
+                })?;
                 let text = self.world.ref_string(me).ok_or_else(object_gone)?;
                 self.push(text);
             }
@@ -490,10 +488,7 @@ impl Interpreter {
             Op::ObjValue => {
                 let text = self.pop()?;
                 let id = self.world.lookup_ref(&text)?;
-                let is_field = self
-                    .world
-                    .get(id)
-                    .is_some_and(|o| o.kind == ObjKind::Field);
+                let is_field = self.world.get(id).is_some_and(|o| o.kind == ObjKind::Field);
                 if is_field {
                     let value = self.world.get_prop(id, "text")?;
                     self.push(value);
@@ -540,11 +535,7 @@ impl Interpreter {
                 has_parent,
             } => {
                 let parent = if has_parent { Some(self.pop()?) } else { None };
-                let name = if has_name {
-                    self.pop()?
-                } else {
-                    String::new()
-                };
+                let name = if has_name { self.pop()? } else { String::new() };
                 let created = self.create_object(kind, &name, parent)?;
                 let text = self.world.ref_string(created).unwrap_or_default();
                 self.write_var("it", text);
@@ -784,9 +775,10 @@ impl Interpreter {
         let mut frame = Frame::new(Rc::clone(&handler), false, wants_value, HashMap::new());
         // Missing arguments are empty and extra ones are ignored (spec HND-4).
         for (i, param) in handler.params.iter().enumerate() {
-            frame
-                .locals
-                .insert(param.to_lowercase(), args.get(i).cloned().unwrap_or_default());
+            frame.locals.insert(
+                param.to_lowercase(),
+                args.get(i).cloned().unwrap_or_default(),
+            );
         }
         frame.args = args;
         frame.me = me;
@@ -857,7 +849,13 @@ impl Interpreter {
         }
         if let (Some(owner), Some(target)) = (me, target) {
             if let Some((new_owner, handler)) = self.find_handler(target, name, Some(owner)) {
-                return self.push_handler_frame(handler, args, new_owner, Some(target), wants_value);
+                return self.push_handler_frame(
+                    handler,
+                    args,
+                    new_owner,
+                    Some(target),
+                    wants_value,
+                );
             }
         }
         // Nobody else handles it. A function that passed has no value.
@@ -1103,7 +1101,9 @@ impl Interpreter {
                     .iter()
                     .any(|c| self.world.get(*c).is_some_and(|o| o.background == Some(id)));
                 if in_use {
-                    return Err(XtError::new("Can't delete a background that cards are using"));
+                    return Err(XtError::new(
+                        "Can't delete a background that cards are using",
+                    ));
                 }
                 self.world.delete(id);
             }
@@ -1179,8 +1179,7 @@ impl Interpreter {
         let Some(obj) = self.world.get(id) else {
             return;
         };
-        let current =
-            Some(id) == self.world.current_stack || Some(id) == self.world.current_card;
+        let current = Some(id) == self.world.current_stack || Some(id) == self.world.current_card;
         let name = obj.props.get("name").cloned().unwrap_or_default();
         out.push_str(&format!(
             "{}{} id {} \"{}\"{}\n",
@@ -1250,10 +1249,7 @@ impl Interpreter {
 
     fn write_var(&mut self, name: &str, value: String) {
         let key = name.to_lowercase();
-        let is_global = self
-            .frames
-            .last()
-            .is_some_and(|f| f.globals.contains(&key));
+        let is_global = self.frames.last().is_some_and(|f| f.globals.contains(&key));
         if is_global {
             self.globals.insert(key, value);
         } else {

@@ -134,9 +134,15 @@ fn comparisons_and_logic() {
 
 #[test]
 fn one_line_if() {
-    assert_eq!(run("if 1 < 2 then put \"yes\" else put \"no\""), vec!["yes"]);
+    assert_eq!(
+        run("if 1 < 2 then put \"yes\" else put \"no\""),
+        vec!["yes"]
+    );
     assert_eq!(run("if 1 > 2 then put \"yes\" else put \"no\""), vec!["no"]);
-    assert_eq!(run("if 1 > 2 then put \"yes\"\nput \"after\""), vec!["after"]);
+    assert_eq!(
+        run("if 1 > 2 then put \"yes\"\nput \"after\""),
+        vec!["after"]
+    );
 }
 
 #[test]
@@ -158,8 +164,14 @@ end if
 
 #[test]
 fn repeat_times() {
-    assert_eq!(run("repeat 3 times\n  put \"hi\"\nend repeat"), vec!["hi", "hi", "hi"]);
-    assert_eq!(run("repeat for 2 times\n  put \"x\"\nend repeat"), vec!["x", "x"]);
+    assert_eq!(
+        run("repeat 3 times\n  put \"hi\"\nend repeat"),
+        vec!["hi", "hi", "hi"]
+    );
+    assert_eq!(
+        run("repeat for 2 times\n  put \"x\"\nend repeat"),
+        vec!["x", "x"]
+    );
 }
 
 #[test]
@@ -277,26 +289,29 @@ fn the_result_holds_what_a_command_returned() {
 #[test]
 fn both_argument_styles() {
     let script = r#"
-on show a b
+on captureArgs a b
   put a && b
-end show
+end captureArgs
 
-show "x" "y"
-show 1, 2
-show (1 + 1) "go"
+captureArgs "x" "y"
+captureArgs 1, 2
+captureArgs (1 + 1) "go"
 "#;
     assert_eq!(run(script), vec!["x y", "1 2", "2 go"]);
 }
 
 #[test]
 fn parameters_may_be_separated_by_commas_or_spaces() {
-    let script = "on show a b, c\n  put a & b & c\nend show\nshow 1 2 3";
+    let script = "on captureArgs a b, c\n  put a & b & c\nend captureArgs\ncaptureArgs 1 2 3";
     assert_eq!(run(script), vec!["123"]);
 }
 
 #[test]
 fn missing_arguments_are_empty() {
-    assert_eq!(run("on show a b\n  put a && b\nend show\nshow \"x\""), vec!["x "]);
+    assert_eq!(
+        run("on captureArgs a b\n  put a && b\nend captureArgs\ncaptureArgs \"x\""),
+        vec!["x "]
+    );
 }
 
 #[test]
@@ -441,7 +456,9 @@ fn runtime_errors_carry_a_line_number() {
     let err = run_err("put 1\nput 1 / 0");
     assert_eq!(err.message, "Can't divide by zero");
     assert_eq!(err.line, Some(1));
-    assert!(run_err("put \"abc\" + 1").message.contains("Expected a number"));
+    assert!(run_err("put \"abc\" + 1")
+        .message
+        .contains("Expected a number"));
     assert!(run_err("if 5 then put 1").message.contains("true or false"));
 }
 
@@ -463,7 +480,7 @@ fn syntax_errors_have_a_position() {
 
 #[test]
 fn mixing_argument_styles_is_an_error() {
-    let script = "on show a b\n  put a\nend show\nshow 1 + 1 \"go\"";
+    let script = "on captureArgs a b\n  put a\nend captureArgs\ncaptureArgs 1 + 1 \"go\"";
     assert!(run_err(script).message.contains("parentheses"));
 }
 
@@ -495,7 +512,10 @@ fn reading_words_items_lines_and_characters() {
 
 #[test]
 fn ordinals() {
-    assert_eq!(run("put the first word of \"alpha beta gamma\""), vec!["alpha"]);
+    assert_eq!(
+        run("put the first word of \"alpha beta gamma\""),
+        vec!["alpha"]
+    );
     assert_eq!(run("put last word of \"alpha beta gamma\""), vec!["gamma"]);
     assert_eq!(run("put the third item of \"a,b,c,d\""), vec!["c"]);
     assert_eq!(run("put the middle word of \"a b c d e\""), vec!["c"]);
@@ -558,7 +578,10 @@ fn counting_chunks() {
 #[test]
 fn chunk_words_are_still_ordinary_variable_names() {
     assert_eq!(run("put 5 into word\nput word"), vec!["5"]);
-    assert_eq!(run("put 7 into word\nput word into line\nput line"), vec!["7"]);
+    assert_eq!(
+        run("put 7 into word\nput word into line\nput line"),
+        vec!["7"]
+    );
     assert_eq!(run("put 3 into first\nput first"), vec!["3"]);
 }
 
@@ -591,17 +614,33 @@ fn item_delimiter() {
         run("set the itemDelimiter to \"::\"\nput item 2 of \"a::b::c\""),
         vec!["b"]
     );
-    assert!(run_err("set the itemDelimiter to \"\"").message.contains("empty"));
-    assert!(run_err("set the colour to 1").message.contains("itemDelimiter"));
+    assert!(run_err("set the itemDelimiter to \"\"")
+        .message
+        .contains("empty"));
+    assert!(run_err("set the colour to 1")
+        .message
+        .contains("itemDelimiter"));
 }
 
 #[test]
 fn putting_into_chunks() {
     let base = "put \"a b c\" into s\n";
-    assert_eq!(run(&format!("{base}put \"X\" into word 2 of s\nput s")), vec!["a X c"]);
-    assert_eq!(run(&format!("{base}put \"X\" before word 2 of s\nput s")), vec!["a Xb c"]);
-    assert_eq!(run(&format!("{base}put \"X\" after word 2 of s\nput s")), vec!["a bX c"]);
-    assert_eq!(run(&format!("{base}put \"Z\" into last word of s\nput s")), vec!["a b Z"]);
+    assert_eq!(
+        run(&format!("{base}put \"X\" into word 2 of s\nput s")),
+        vec!["a X c"]
+    );
+    assert_eq!(
+        run(&format!("{base}put \"X\" before word 2 of s\nput s")),
+        vec!["a Xb c"]
+    );
+    assert_eq!(
+        run(&format!("{base}put \"X\" after word 2 of s\nput s")),
+        vec!["a bX c"]
+    );
+    assert_eq!(
+        run(&format!("{base}put \"Z\" into last word of s\nput s")),
+        vec!["a b Z"]
+    );
     assert_eq!(
         run("put \"abc\" into s\nput \"X\" into char 2 of s\nput s"),
         vec!["aXc"]
@@ -629,7 +668,10 @@ fn items_and_lines_grow_but_words_do_not() {
         run("put \"a,b\" into s\nput \"z\" into item 4 of s\nput s"),
         vec!["a,b,,z"]
     );
-    assert_eq!(run("put \"x\" into item 3 of fresh\nput fresh"), vec![",,x"]);
+    assert_eq!(
+        run("put \"x\" into item 3 of fresh\nput fresh"),
+        vec![",,x"]
+    );
     assert_eq!(
         run("put \"a\" into s\nput \"z\" into line 3 of s\nput s"),
         vec!["a\n\nz"]
@@ -702,7 +744,9 @@ fn function_errors() {
     assert!(run_err("put abs()").message.contains("expects"));
     assert!(run_err("put abs(1, 2)").message.contains("expects"));
     assert!(run_err("put sqrt(-1)").message.contains("square root"));
-    assert!(run_err("put abs(\"x\")").message.contains("Expected a number"));
+    assert!(run_err("put abs(\"x\")")
+        .message
+        .contains("Expected a number"));
 }
 
 #[test]
@@ -714,12 +758,12 @@ fn a_user_function_beats_a_built_in() {
 #[test]
 fn parameter_functions() {
     let script = r#"
-on show a b
+on captureArgs a b
   put paramCount() & ":" & param(1) & ":" & param(0) & ":" & params()
-end show
-show "x" "y" "z"
+end captureArgs
+captureArgs "x" "y" "z"
 "#;
-    assert_eq!(run(script), vec!["3:x:show:x,y,z"]);
+    assert_eq!(run(script), vec!["3:x:captureArgs:x,y,z"]);
 }
 
 // ----- arithmetic commands ---------------------------------------------------
@@ -745,28 +789,49 @@ fn arithmetic_on_a_chunk() {
 
 #[test]
 fn arithmetic_on_an_unassigned_variable_is_an_error() {
-    assert!(run_err("add 1 to total").message.contains("Expected a number"));
+    assert!(run_err("add 1 to total")
+        .message
+        .contains("Expected a number"));
 }
 
 // ----- delete ----------------------------------------------------------------
 
 #[test]
 fn deleting_chunks() {
-    assert_eq!(run("put \"a b c\" into s\ndelete word 2 of s\nput s"), vec!["a c"]);
-    assert_eq!(run("put \"a,b,c\" into s\ndelete last item of s\nput s"), vec!["a,b"]);
-    assert_eq!(run("put \"a,b,c\" into s\ndelete item 1 of s\nput s"), vec!["b,c"]);
+    assert_eq!(
+        run("put \"a b c\" into s\ndelete word 2 of s\nput s"),
+        vec!["a c"]
+    );
+    assert_eq!(
+        run("put \"a,b,c\" into s\ndelete last item of s\nput s"),
+        vec!["a,b"]
+    );
+    assert_eq!(
+        run("put \"a,b,c\" into s\ndelete item 1 of s\nput s"),
+        vec!["b,c"]
+    );
     assert_eq!(
         run("put \"x\" & return & \"y\" into s\ndelete line 1 of s\nput s"),
         vec!["y"]
     );
-    assert_eq!(run("put \"hello\" into s\ndelete char 2 to 3 of s\nput s"), vec!["hlo"]);
-    assert_eq!(run("put \"a b c\" into s\ndelete word 9 of s\nput s"), vec!["a b c"]);
-    assert_eq!(run("put \"solo\" into s\ndelete word 1 of s\nput s"), vec![""]);
+    assert_eq!(
+        run("put \"hello\" into s\ndelete char 2 to 3 of s\nput s"),
+        vec!["hlo"]
+    );
+    assert_eq!(
+        run("put \"a b c\" into s\ndelete word 9 of s\nput s"),
+        vec!["a b c"]
+    );
+    assert_eq!(
+        run("put \"solo\" into s\ndelete word 1 of s\nput s"),
+        vec![""]
+    );
 }
 
 #[test]
 fn deleting_a_chunk_of_a_chunk() {
-    let script = "put \"a b\" & return & \"c d\" into s\ndelete word 1 of line 2 of s\nput line 2 of s";
+    let script =
+        "put \"a b\" & return & \"c d\" into s\ndelete word 1 of line 2 of s\nput line 2 of s";
     assert_eq!(run(script), vec!["d"]);
 }
 
@@ -859,8 +924,10 @@ fn try_needs_a_catch() {
 #[test]
 fn answer_stores_the_chosen_button() {
     let mut interp = Interpreter::new();
-    let mut host = Capture::default();
-    host.answers = vec![1];
+    let mut host = Capture {
+        answers: vec![1],
+        ..Capture::default()
+    };
     let script = "answer \"Continue?\" with \"Yes\" or \"No\" or \"Cancel\"\nput it";
     interp.run_source(script, &mut host).unwrap();
     assert_eq!(host.out, vec!["No"]);
@@ -871,7 +938,9 @@ fn answer_stores_the_chosen_button() {
 fn answer_without_buttons_has_ok() {
     let mut interp = Interpreter::new();
     let mut host = Capture::default();
-    interp.run_source("answer \"Hi\"\nput it", &mut host).unwrap();
+    interp
+        .run_source("answer \"Hi\"\nput it", &mut host)
+        .unwrap();
     assert_eq!(host.out, vec!["OK"]);
     assert_eq!(host.prompts, vec!["Hi|OK"]);
 }
@@ -879,8 +948,10 @@ fn answer_without_buttons_has_ok() {
 #[test]
 fn ask_stores_the_reply() {
     let mut interp = Interpreter::new();
-    let mut host = Capture::default();
-    host.asks = vec![Some("Bob".to_string())];
+    let mut host = Capture {
+        asks: vec![Some("Bob".to_string())],
+        ..Capture::default()
+    };
     interp
         .run_source("ask \"Name?\" with \"Anon\"\nput it", &mut host)
         .unwrap();
@@ -891,8 +962,10 @@ fn ask_stores_the_reply() {
 #[test]
 fn cancelling_ask_sets_the_result() {
     let mut interp = Interpreter::new();
-    let mut host = Capture::default();
-    host.asks = vec![None];
+    let mut host = Capture {
+        asks: vec![None],
+        ..Capture::default()
+    };
     interp
         .run_source("ask \"Name?\"\nput it & \"/\" & the result", &mut host)
         .unwrap();
@@ -965,7 +1038,9 @@ fn constants_cannot_be_assigned() {
     assert!(run_err("put 5 into cr").message.contains("constant"));
     assert!(run_err("put 5 into return").message.contains("constant"));
     assert!(run_err("add 1 to pi").message.contains("constant"));
-    assert!(run_err("put 1 into word 2 of space").message.contains("constant"));
+    assert!(run_err("put 1 into word 2 of space")
+        .message
+        .contains("constant"));
     assert!(run_err("repeat with space = 1 to 3; put 1; end repeat")
         .message
         .contains("constant"));
@@ -1050,7 +1125,9 @@ fn shell_access_is_denied_unless_the_host_allows_it() {
 
 #[test]
 fn do_needs_a_known_shell() {
-    assert!(run_err("do \"ls\" as klingon").message.contains("Unknown language"));
+    assert!(run_err("do \"ls\" as klingon")
+        .message
+        .contains("Unknown language"));
     assert!(run_err("do \"ls\"").message.contains("as"));
 }
 
@@ -1069,7 +1146,10 @@ mod shell_tests {
 
     #[test]
     fn the_shell_function_sets_the_result_to_the_exit_status() {
-        assert_eq!(run("put shell(\"exit 3\") & \"/\" & the result"), vec!["/3"]);
+        assert_eq!(
+            run("put shell(\"exit 3\") & \"/\" & the result"),
+            vec!["/3"]
+        );
         assert_eq!(run("put shell(\"true\") & the result"), vec!["0"]);
     }
 
@@ -1174,13 +1254,20 @@ put field 1
 "#;
     assert_eq!(
         run(script),
-        vec!["hello world", "world", "hello world", "bighello world", "bighello X"]
+        vec![
+            "hello world",
+            "world",
+            "hello world",
+            "bighello world",
+            "bighello X"
+        ]
     );
 }
 
 #[test]
 fn arithmetic_and_delete_work_on_fields() {
-    let script = "create field \"n\"\nput 5 into field \"n\"\nadd 2 to field \"n\"\nput field \"n\"";
+    let script =
+        "create field \"n\"\nput 5 into field \"n\"\nadd 2 to field \"n\"\nput field \"n\"";
     assert_eq!(run(script), vec!["7"]);
     let script = "create field \"f\"\nput \"a b c\" into field \"f\"\ndelete word 2 of field \"f\"\nput field \"f\"";
     assert_eq!(run(script), vec!["a c"]);
@@ -1209,7 +1296,14 @@ put the rect of button 1
 "#;
     assert_eq!(
         run(script),
-        vec!["100", "30", "10", "50,20,150,50", "50,20,90,50", "80,85,120,115"]
+        vec![
+            "100",
+            "30",
+            "10",
+            "50,20,150,50",
+            "50,20,90,50",
+            "80,85,120,115"
+        ]
     );
 }
 
@@ -1236,7 +1330,10 @@ fn some_properties_are_read_only() {
         run("create button \"B\"\nput the id of button 1 > 0"),
         vec!["true"]
     );
-    assert_eq!(run("create button \"B\"\nput the number of button 1"), vec!["1"]);
+    assert_eq!(
+        run("create button \"B\"\nput the number of button 1"),
+        vec!["1"]
+    );
 }
 
 #[test]
@@ -1254,7 +1351,8 @@ put the number of buttons
 
 #[test]
 fn an_object_reference_can_be_kept_in_a_variable() {
-    let script = "create button \"A\"\nput it into r\nset the name of r to \"Z\"\nput the name of button 1";
+    let script =
+        "create button \"A\"\nput it into r\nset the name of r to \"Z\"\nput the name of button 1";
     assert_eq!(run(script), vec!["Z"]);
 }
 

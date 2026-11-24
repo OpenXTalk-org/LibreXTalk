@@ -388,7 +388,10 @@ impl World {
                         return Ok(obj_id);
                     }
                 }
-                return Err(XtError::new(format!("{} no longer exists", words[..3].join(" "))));
+                return Err(XtError::new(format!(
+                    "{} no longer exists",
+                    words[..3].join(" ")
+                )));
             }
         }
         Err(XtError::new(format!(

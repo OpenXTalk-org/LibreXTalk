@@ -25,10 +25,69 @@ env:
 
 jobs:
   build:
-    name: Release build
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+            binary: xt
+            asset: librextalk-xt-linux-x86_64
+          - platform: macos
+            runner: macos-latest
+            binary: xt
+            asset: librextalk-xt-macos
+          - platform: windows
+            runner: windows-latest
+            binary: xt.exe
+            asset: librextalk-xt-windows-x86_64.exe
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --release
+      - run: cargo build --locked --release --package xt-cli --bin xt
+      - name: Stage binary
+        shell: bash
+        env:
+          BINARY: ${{ matrix.binary }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          mkdir -p dist
+          cp "target/release/$BINARY" "dist/$ASSET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xt-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish test pre-release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: xt-*
+          path: dist
+          merge-multiple: true
+      - name: Prepare release tag
+        id: meta
+        run: echo "sha_short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - name: Set Unix binary permissions
+        run: chmod +x dist/librextalk-xt-linux-x86_64 dist/librextalk-xt-macos
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-${{ steps.meta.outputs.sha_short }}
+          name: TEST build ${{ steps.meta.outputs.sha_short }}
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: dist/*
+          token: ${{ secrets.GITHUB_TOKEN }}
