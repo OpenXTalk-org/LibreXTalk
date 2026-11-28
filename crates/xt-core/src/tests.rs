@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use std::collections::HashMap;
 
-use crate::{DialogRequest, Host, Interpreter, PartNode, XtError};
+use crate::{DialogRequest, Host, HostReply, Interpreter, PartNode, Pending, Status, XtError};
 
 #[derive(Default)]
 struct Capture {
@@ -23,6 +23,9 @@ struct Capture {
     choices: Vec<Option<String>>,
     /// Stacks saved by `save stack`, by file name: an in-memory disk.
     files: HashMap<String, PartNode>,
+    /// When true, every dialog and file call answers `Later`, like a
+    /// browser host; the test then gives the reply.
+    later: bool,
 }
 
 impl Host for Capture {
@@ -34,25 +37,31 @@ impl Host for Capture {
         true
     }
 
-    fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize {
+    fn answer(&mut self, prompt: &str, buttons: &[String]) -> Pending<usize> {
         self.prompts.push(format!("{prompt}|{}", buttons.join("/")));
+        if self.later {
+            return Pending::Later;
+        }
         if self.answers.is_empty() {
-            0
+            Pending::Ready(0)
         } else {
-            self.answers.remove(0)
+            Pending::Ready(self.answers.remove(0))
         }
     }
 
-    fn ask(&mut self, prompt: &str, default: &str) -> Option<String> {
+    fn ask(&mut self, prompt: &str, default: &str) -> Pending<Option<String>> {
         self.prompts.push(format!("{prompt}|{default}"));
+        if self.later {
+            return Pending::Later;
+        }
         if self.asks.is_empty() {
-            Some(default.to_string())
+            Pending::Ready(Some(default.to_string()))
         } else {
-            self.asks.remove(0)
+            Pending::Ready(self.asks.remove(0))
         }
     }
 
-    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+    fn choose(&mut self, request: &DialogRequest) -> Pending<Option<String>> {
         self.dialogs.push(format!(
             "{:?}|{}|{}|{}",
             request.form,
@@ -60,22 +69,33 @@ impl Host for Capture {
             request.default,
             request.types.join("/")
         ));
-        if !self.choices.is_empty() {
-            return self.choices.remove(0);
+        if self.later {
+            return Pending::Later;
         }
-        (!request.default.is_empty()).then(|| request.default.to_string())
+        if !self.choices.is_empty() {
+            return Pending::Ready(self.choices.remove(0));
+        }
+        Pending::Ready((!request.default.is_empty()).then(|| request.default.to_string()))
     }
 
-    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> {
+    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Pending<Result<(), XtError>> {
         self.files.insert(path.to_string(), stack.clone());
-        Ok(())
+        if self.later {
+            return Pending::Later;
+        }
+        Pending::Ready(Ok(()))
     }
 
-    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> {
-        self.files
-            .get(path)
-            .cloned()
-            .ok_or_else(|| XtError::new(format!("No such file: {path}")))
+    fn open_stack(&mut self, path: &str) -> Pending<Result<PartNode, XtError>> {
+        if self.later {
+            return Pending::Later;
+        }
+        Pending::Ready(
+            self.files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| XtError::new(format!("No such file: {path}"))),
+        )
     }
 
     // Record waits instead of really sleeping, so tests stay fast.
@@ -1229,6 +1249,7 @@ mod shell_tests {
             match interp.run(&mut host).unwrap() {
                 Status::Finished => break,
                 Status::Sleeping(_) => std::thread::sleep(Duration::from_millis(10)),
+                Status::Waiting => panic!("nothing here answers later"),
             }
         }
         assert_eq!(host.out, vec!["before", "done"]);
@@ -1257,16 +1278,19 @@ fn the_object_tree_can_be_listed() {
     let interp = Interpreter::new();
     let listing = interp.describe_objects();
     assert!(listing.contains("stack id 1 \"Untitled\" *"));
-    assert!(listing.contains("card id 3 \"\" *"));
+    assert!(listing.contains("card id 2 \"\" *"));
 }
 
 #[test]
 fn creating_and_reading_controls() {
-    assert_eq!(run("create button \"OK\"\nput it"), vec!["button id 4"]);
+    assert_eq!(
+        run("create button \"OK\"\nput it"),
+        vec!["button id 3 of stack id 1"]
+    );
     let script = "create button \"OK\"\nput the name of button 1\nput the number of buttons";
     assert_eq!(run(script), vec!["OK", "1"]);
     assert_eq!(
-        run("create button \"OK\"\nput the name of button id 4"),
+        run("create button \"OK\"\nput the name of button id 3"),
         vec!["OK"]
     );
 }
@@ -1491,7 +1515,7 @@ put control "Notes"
     // is a field, so its value is its text, as for any field reference.
     assert_eq!(
         run(script),
-        vec!["2", "2", "2", "Notes", "button id 4", "hello"]
+        vec!["2", "2", "2", "Notes", "button id 3 of stack id 1", "hello"]
     );
 }
 
@@ -1499,14 +1523,14 @@ put control "Notes"
 fn a_part_reference_by_id_finds_any_control() {
     let script = r#"
 create button "OK"
-put the name of part id 4
-put the name of button id 4
+put the name of part id 3
+put the name of button id 3
 "#;
     assert_eq!(run(script), vec!["OK", "OK"]);
     // A button id is not a field id, but it is a part id.
-    assert!(run_err("create button \"OK\"\nput the name of field id 4")
+    assert!(run_err("create button \"OK\"\nput the name of field id 3")
         .message
-        .contains("There is no field id 4"));
+        .contains("There is no field id 3"));
 }
 
 #[test]
@@ -1518,7 +1542,10 @@ put the rect of part "Spacer"
 set the width of part "Spacer" to 40
 put the rect of it
 "#;
-    assert_eq!(run(script), vec!["part id 4", "0,0,100,100", "0,0,40,100"]);
+    assert_eq!(
+        run(script),
+        vec!["part id 3 of stack id 1", "0,0,100,100", "0,0,40,100"]
+    );
 }
 
 #[test]
@@ -1537,8 +1564,8 @@ put the number of parts
     assert_eq!(
         run(script),
         vec![
-            "audioClip id 4",
-            "videoClip id 5",
+            "audioClip id 3 of stack id 1",
+            "videoClip id 4 of stack id 1",
             "1",
             "1",
             "100",
@@ -1897,9 +1924,10 @@ fn saving_needs_a_file_name_the_first_time() {
 }
 
 #[test]
-fn clashing_ids_get_fresh_ones() {
-    // The default stack in every new engine has ids 1 to 3, so opening a
-    // saved copy of it in a new engine clashes, and it gets new ids.
+fn only_a_clashing_stack_id_changes() {
+    // Every new engine starts with stack id 1, so a saved copy of the
+    // default stack clashes when opened in a new engine. The stack gets a
+    // new id; the objects in it keep theirs (SFM-3, OBJ-15).
     let host = run_twice(
         r#"
 create button "OK"
@@ -1908,11 +1936,12 @@ save this stack as "u"
         r#"
 open stack "u"
 put the number of stacks
-put the id of button "OK" > 4
-send mouseUp to button "OK"
+put the id of this stack
+put the id of button "OK"
+put the name of button id 3
 "#,
     );
-    assert_eq!(host.out, vec!["2", "true"]);
+    assert_eq!(host.out, vec!["2", "2", "3", "OK"]);
 }
 
 #[test]
@@ -1924,8 +1953,8 @@ open stack "demo.xtstack.html"
 put the id of button "OK" of card 1
 "#,
     );
-    // Stack 4, background 5, card 6, button 7, as in the first engine.
-    assert_eq!(host.out, vec!["7"]);
+    // Background 1, card 2, button 3, as in the first engine.
+    assert_eq!(host.out, vec!["3"]);
 }
 
 #[test]
@@ -2014,4 +2043,226 @@ save
 open "door"
 "#;
     assert_eq!(run(script), vec!["saving", "opening door"]);
+}
+
+// ----- host calls answered later (HST-1 to HST-3) ----------------------------
+
+/// A host that answers every dialog and file call later, as a browser host
+/// does. The test plays the person (or the browser) by calling `reply`.
+fn later_host() -> Capture {
+    Capture {
+        later: true,
+        ..Capture::default()
+    }
+}
+
+#[test]
+fn a_dialog_answered_later_pauses_the_script() {
+    let mut interp = Interpreter::new();
+    let mut host = later_host();
+    interp
+        .load("put \"before\"\nanswer \"Sure?\" with \"Yes\" or \"No\"\nput it")
+        .unwrap();
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Waiting);
+    assert!(interp.is_waiting());
+    assert_eq!(host.out, vec!["before"]);
+    // Running again without a reply just keeps waiting, and asks nothing new.
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Waiting);
+    assert_eq!(host.prompts.len(), 1);
+
+    interp.reply(HostReply::Button(1)).unwrap();
+    assert!(!interp.is_waiting());
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Finished);
+    assert_eq!(host.out, vec!["before", "No"]);
+}
+
+#[test]
+fn every_kind_of_host_call_can_be_answered_later() {
+    let mut interp = Interpreter::new();
+    let mut host = later_host();
+    interp
+        .load(
+            r#"
+ask "Name?"
+put "name: " & it
+answer file "Open:"
+put "file: " & it & " " & the result
+save this stack as "s"
+put "saved " & the filename of this stack
+open stack "other"
+put "opened " & the name of this stack
+"#,
+        )
+        .unwrap();
+    let mut other = PartNode {
+        kind: "stack".to_string(),
+        id: 50,
+        props: vec![("name".to_string(), "Other".to_string())],
+        ..PartNode::default()
+    };
+    other.children.push(PartNode {
+        kind: "card".to_string(),
+        id: 51,
+        ..PartNode::default()
+    });
+    let replies = vec![
+        HostReply::Text(Some("Ada".to_string())),
+        HostReply::Text(None),
+        HostReply::Saved(Ok(())),
+        HostReply::Opened(Ok(other)),
+    ];
+    for reply in replies {
+        assert_eq!(interp.run(&mut host).unwrap(), Status::Waiting);
+        interp.reply(reply).unwrap();
+    }
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Finished);
+    assert_eq!(
+        host.out,
+        vec!["name: Ada", "file:  Cancel", "saved s", "opened Other"]
+    );
+}
+
+#[test]
+fn a_function_can_wait_in_the_middle_of_an_expression() {
+    // The VM keeps its own frames, so a dialog inside a function called
+    // from an expression pauses and resumes like any other.
+    let mut interp = Interpreter::new();
+    let mut host = later_host();
+    interp
+        .load(
+            r#"
+function pick
+  ask "Number?"
+  return it * 2
+end pick
+put pick() + 1
+"#,
+        )
+        .unwrap();
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Waiting);
+    interp
+        .reply(HostReply::Text(Some("20".to_string())))
+        .unwrap();
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Finished);
+    assert_eq!(host.out, vec!["41"]);
+}
+
+#[test]
+fn an_error_given_as_a_reply_can_be_caught() {
+    let mut interp = Interpreter::new();
+    let mut host = later_host();
+    interp
+        .load(
+            r#"
+try
+  open stack "missing"
+catch e
+  put "caught: " & e
+end try
+"#,
+        )
+        .unwrap();
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Waiting);
+    interp
+        .reply(HostReply::Opened(Err(XtError::new("no such file"))))
+        .unwrap();
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Finished);
+    assert_eq!(host.out, vec!["caught: no such file"]);
+}
+
+#[test]
+fn wrong_or_extra_replies_are_refused() {
+    let mut interp = Interpreter::new();
+    let mut host = later_host();
+    assert!(interp
+        .reply(HostReply::Button(0))
+        .unwrap_err()
+        .message
+        .contains("Nothing is waiting"));
+    interp.load("ask \"Name?\"").unwrap();
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Waiting);
+    assert!(interp
+        .reply(HostReply::Button(0))
+        .unwrap_err()
+        .message
+        .contains("waiting for a text reply"));
+    interp.reply(HostReply::Text(None)).unwrap();
+    assert!(interp
+        .reply(HostReply::Text(None))
+        .unwrap_err()
+        .message
+        .contains("already been given"));
+    assert_eq!(interp.run(&mut host).unwrap(), Status::Finished);
+}
+
+#[test]
+fn run_to_end_cannot_wait_for_a_host() {
+    let mut interp = Interpreter::new();
+    let mut host = later_host();
+    let err = interp.run_source("answer \"Hi\"", &mut host).unwrap_err();
+    assert!(err.message.contains("use run and reply"));
+    // The engine is ready for the next script, with nothing left waiting.
+    assert!(!interp.is_waiting());
+    host.later = false;
+    interp.run_source("put 1", &mut host).unwrap();
+    assert_eq!(host.out, vec!["1"]);
+}
+
+// ----- ids are numbered per stack (OBJ-15, OBJ-16) ---------------------------
+
+#[test]
+fn each_stack_numbers_its_own_objects() {
+    let script = r#"
+create button "First"
+put it into a
+create stack "Two"
+create button "Second"
+put it into b
+put a
+put b
+put the name of a
+put the name of b
+put the name of button id 3
+put the name of button id 3 of stack "Untitled"
+put the id of this stack
+"#;
+    assert_eq!(
+        run(script),
+        vec![
+            "button id 3 of stack id 1",
+            "button id 3 of stack id 2",
+            "First",
+            "Second",
+            "Second",
+            "First",
+            "2"
+        ]
+    );
+}
+
+#[test]
+fn a_short_reference_means_the_current_stack() {
+    let script = r#"
+create button "First"
+create stack "Two"
+create button "Second"
+put the name of "button id 3"
+go stack "Untitled"
+put the name of "button id 3"
+"#;
+    assert_eq!(run(script), vec!["Second", "First"]);
+}
+
+#[test]
+fn a_reference_to_a_deleted_stack_says_so() {
+    let script = r#"
+create stack "Two"
+create button "B"
+put it into b
+delete stack "Two"
+put the name of b
+"#;
+    assert!(run_err(script)
+        .message
+        .contains("button id 3 of stack id 2 no longer exists"));
 }

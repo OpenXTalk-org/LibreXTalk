@@ -11,7 +11,9 @@ use std::process;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use xt_core::{parse_script, DialogForm, DialogRequest, Host, Interpreter, PartNode, XtError};
+use xt_core::{
+    parse_script, DialogForm, DialogRequest, Host, Interpreter, PartNode, Pending, XtError,
+};
 
 /// The host for a terminal: the message box is standard output, and a wait
 /// really sleeps (the default `sleep` in the `Host` trait).
@@ -20,19 +22,17 @@ struct StdoutHost {
     allow_shell: bool,
 }
 
-impl Host for StdoutHost {
-    fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
+/// The terminal answers every question at once, so these return plain
+/// values; the `Host` methods below wrap them as `Pending::Ready`.
+impl StdoutHost {
+    fn allow_shell_now(&mut self) -> bool {
         if !self.allow_shell {
             eprintln!("(shell commands are off: run with --allow-shell to permit them)");
         }
         self.allow_shell
     }
 
-    fn message(&mut self, text: &str) {
-        println!("{text}");
-    }
-
-    fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize {
+    fn answer_now(&mut self, prompt: &str, buttons: &[String]) -> usize {
         // With only one button there is nothing to choose, so show the
         // message and carry on without waiting.
         if buttons.len() <= 1 {
@@ -74,7 +74,7 @@ impl Host for StdoutHost {
         }
     }
 
-    fn ask(&mut self, prompt: &str, default: &str) -> Option<String> {
+    fn ask_now(&mut self, prompt: &str, default: &str) -> Option<String> {
         if default.is_empty() {
             print!("{prompt} ");
         } else {
@@ -99,7 +99,7 @@ impl Host for StdoutHost {
     /// (`.xtstack.html` for now). A failed write leaves any old file as it
     /// was: the new text goes to a temporary file first, which then
     /// replaces the old one.
-    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> {
+    fn save_stack_now(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> {
         let bytes = xt_stackfile::encode(path, stack)?;
         let temp = format!("{path}.saving");
         fs::write(&temp, &bytes)
@@ -110,7 +110,7 @@ impl Host for StdoutHost {
             })
     }
 
-    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> {
+    fn open_stack_now(&mut self, path: &str) -> Result<PartNode, XtError> {
         let bytes =
             fs::read(path).map_err(|e| XtError::new(format!("Couldn't open \"{path}\": {e}")))?;
         xt_stackfile::decode(&bytes).map_err(|e| {
@@ -125,7 +125,7 @@ impl Host for StdoutHost {
     /// A terminal has no file or color pickers, so every dialog form becomes
     /// a typed reply: a path, a color, or an effect name. Return alone takes
     /// the suggested value, or cancels when there is none.
-    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+    fn choose_now(&mut self, request: &DialogRequest) -> Option<String> {
         let what = match request.form {
             DialogForm::AnswerFile => "File to open",
             DialogForm::AskFile => "File to save",
@@ -159,6 +159,36 @@ impl Host for StdoutHost {
                 }
             }
         }
+    }
+}
+
+impl Host for StdoutHost {
+    fn message(&mut self, text: &str) {
+        println!("{text}");
+    }
+
+    fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
+        self.allow_shell_now()
+    }
+
+    fn answer(&mut self, prompt: &str, buttons: &[String]) -> Pending<usize> {
+        self.answer_now(prompt, buttons).into()
+    }
+
+    fn ask(&mut self, prompt: &str, default: &str) -> Pending<Option<String>> {
+        self.ask_now(prompt, default).into()
+    }
+
+    fn choose(&mut self, request: &DialogRequest) -> Pending<Option<String>> {
+        self.choose_now(request).into()
+    }
+
+    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Pending<Result<(), XtError>> {
+        self.save_stack_now(path, stack).into()
+    }
+
+    fn open_stack(&mut self, path: &str) -> Pending<Result<PartNode, XtError>> {
+        self.open_stack_now(path).into()
     }
 }
 

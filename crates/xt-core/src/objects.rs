@@ -43,8 +43,16 @@ struct Slot {
 pub struct World {
     slots: Vec<Slot>,
     free: Vec<usize>,
-    by_id: HashMap<i64, ObjId>,
-    next_id: i64,
+    /// Objects other than stacks, by their stack and their id. Ids are
+    /// numbered within each stack (OBJ-15), as in HyperCard and LiveCode, so
+    /// an object keeps its id when its stack is saved and opened again.
+    by_id: HashMap<(ObjId, i64), ObjId>,
+    /// The last id used in each stack.
+    next_ids: HashMap<ObjId, i64>,
+    /// Stacks by their id. A stack's own id is unique in the whole engine,
+    /// so references can name the stack (OBJ-16).
+    stack_ids: HashMap<i64, ObjId>,
+    next_stack_id: i64,
     pub stacks: Vec<ObjId>,
     pub current_stack: Option<ObjId>,
     pub current_card: Option<ObjId>,
@@ -396,8 +404,39 @@ impl World {
     /// Make an object of `kind` with its prototype's default properties and
     /// add it to the end of its parent's children.
     pub fn create(&mut self, kind: ObjKind, name: &str, parent: Option<ObjId>) -> ObjId {
-        self.next_id += 1;
-        let id = self.next_id;
+        self.create_with_id(kind, name, parent, None)
+    }
+
+    /// Like `create`, but with a chosen id (when opening a stack file). The
+    /// caller makes sure the id is free in its stack.
+    fn create_with_id(
+        &mut self,
+        kind: ObjKind,
+        name: &str,
+        parent: Option<ObjId>,
+        wanted: Option<i64>,
+    ) -> ObjId {
+        // A stack takes the next engine-wide stack id. Anything else takes
+        // the next id of its stack. Every object but a stack has a parent,
+        // so it always has a stack.
+        let stack = if kind == ObjKind::Stack {
+            None
+        } else {
+            parent.and_then(|p| self.stack_of(p))
+        };
+        let id = match stack {
+            None => {
+                let id = wanted.unwrap_or(self.next_stack_id + 1);
+                self.next_stack_id = self.next_stack_id.max(id);
+                id
+            }
+            Some(stack) => {
+                let last = self.next_ids.entry(stack).or_insert(0);
+                let id = wanted.unwrap_or(*last + 1);
+                *last = (*last).max(id);
+                id
+            }
+        };
         let mut props = HashMap::new();
         props.insert("name".to_string(), name.to_string());
         props.insert("script".to_string(), String::new());
@@ -413,7 +452,14 @@ impl World {
             props,
             handlers: HashMap::new(),
         });
-        self.by_id.insert(id, obj_id);
+        match stack {
+            None => {
+                self.stack_ids.insert(id, obj_id);
+            }
+            Some(stack) => {
+                self.by_id.insert((stack, id), obj_id);
+            }
+        }
         if let Some(parent) = parent {
             if let Some(p) = self.get_mut(parent) {
                 p.children.push(obj_id);
@@ -440,6 +486,8 @@ impl World {
         let children = obj.children.clone();
         let parent = obj.parent;
         let object_id = obj.id;
+        let is_stack = obj.kind == ObjKind::Stack;
+        let stack = self.stack_of(id);
         for child in children {
             self.delete(child);
         }
@@ -450,34 +498,60 @@ impl World {
         }
         self.stacks.retain(|s| *s != id);
         self.files.remove(&id);
-        self.by_id.remove(&object_id);
+        if is_stack {
+            self.stack_ids.remove(&object_id);
+            self.next_ids.remove(&id);
+        } else if let Some(stack) = stack {
+            self.by_id.remove(&(stack, object_id));
+        }
         let slot = &mut self.slots[id.index];
         slot.obj = None;
         slot.gen += 1;
         self.free.push(id.index);
     }
 
-    /// The text that stands for an object: `button id 12`.
+    /// The text that stands for an object: `stack id 1`, or
+    /// `button id 12 of stack id 1`, because ids are numbered per stack
+    /// (OBJ-16).
     pub fn ref_string(&self, id: ObjId) -> Option<String> {
-        self.get(id)
-            .map(|o| format!("{} id {}", kind_name(o.kind), o.id))
+        let obj = self.get(id)?;
+        let kind = kind_name(obj.kind);
+        if obj.kind == ObjKind::Stack {
+            return Some(format!("{kind} id {}", obj.id));
+        }
+        let stack = self.get(self.stack_of(id)?)?;
+        Some(format!("{kind} id {} of stack id {}", obj.id, stack.id))
     }
 
-    /// Find the object a reference such as `button id 12` stands for.
+    /// Find the object a reference stands for: `button id 12 of stack id 1`,
+    /// or the short `button id 12`, which means the current stack.
     pub fn lookup_ref(&self, text: &str) -> Result<ObjId, XtError> {
         let words: Vec<&str> = text.split_whitespace().collect();
-        if words.len() >= 3 && words[1].eq_ignore_ascii_case("id") {
+        let is_id = |w: &str| w.eq_ignore_ascii_case("id");
+        let shape_ok = match words.len() {
+            3 => is_id(words[1]),
+            7 => {
+                is_id(words[1])
+                    && words[3].eq_ignore_ascii_case("of")
+                    && kind_of_word(words[4]) == Some((ObjKind::Stack, false))
+                    && is_id(words[5])
+            }
+            _ => false,
+        };
+        if shape_ok {
             if let (Some((kind, false)), Ok(n)) = (kind_of_word(words[0]), words[2].parse::<i64>())
             {
-                if let Some(&obj_id) = self.by_id.get(&n) {
-                    if self.get(obj_id).is_some_and(|o| kind_matches(kind, o.kind)) {
-                        return Ok(obj_id);
-                    }
-                }
-                return Err(XtError::new(format!(
-                    "{} no longer exists",
-                    words[..3].join(" ")
-                )));
+                let stack = if words.len() == 7 {
+                    words[6]
+                        .parse::<i64>()
+                        .ok()
+                        .and_then(|m| self.stack_ids.get(&m).copied())
+                } else {
+                    self.current_stack
+                };
+                return self
+                    .find_by_id(kind, n, stack)
+                    .ok_or_else(|| XtError::new(format!("{text} no longer exists")));
             }
         }
         Err(XtError::new(format!(
@@ -485,8 +559,15 @@ impl World {
         )))
     }
 
-    pub fn by_numeric_id(&self, id: i64) -> Option<ObjId> {
-        self.by_id.get(&id).copied()
+    /// The object of `kind` with id `n`: a stack by its engine-wide id, or
+    /// anything else by its id in `stack`.
+    pub fn find_by_id(&self, kind: ObjKind, n: i64, stack: Option<ObjId>) -> Option<ObjId> {
+        let found = if kind == ObjKind::Stack {
+            self.stack_ids.get(&n).copied()
+        } else {
+            self.by_id.get(&(stack?, n)).copied()
+        };
+        found.filter(|id| self.get(*id).is_some_and(|o| kind_matches(kind, o.kind)))
     }
 
     pub fn children_of_kind(&self, parent: ObjId, kind: ObjKind) -> Vec<ObjId> {
@@ -614,8 +695,13 @@ impl World {
                 tree.kind
             )));
         }
+        // Ids inside the stack are its own, so they are always kept. Only
+        // the stack's id must be unique in the engine: if another open stack
+        // has it, the opened stack gets a fresh one (SFM-3).
         let mut ids = Vec::new();
-        collect_ids(tree, &mut ids);
+        for child in &tree.children {
+            collect_ids(child, &mut ids);
+        }
         let mut seen = std::collections::HashSet::new();
         for &id in &ids {
             if id < 1 || !seen.insert(id) {
@@ -624,22 +710,29 @@ impl World {
                 )));
             }
         }
-        let keep_ids = ids.iter().all(|id| !self.by_id.contains_key(id));
+        let stack_id = (tree.id >= 1 && !self.stack_ids.contains_key(&tree.id)).then_some(tree.id);
+        let stack = self.create_with_id(ObjKind::Stack, "", None, stack_id);
         let mut new_of_old = HashMap::new();
         let mut scripts = Vec::new();
-        let stack = match self.import_node(tree, None, keep_ids, &mut new_of_old, &mut scripts) {
-            Ok(stack) => stack,
-            Err(e) => {
-                // Remove whatever was made before the problem was found.
-                if let Some(&root) = new_of_old.get(&tree.id) {
-                    self.delete(root);
-                }
-                return Err(e);
+        let built = self.set_imported_props(stack, tree).and_then(|()| {
+            if !tree.script.is_empty() {
+                scripts.push((stack, tree.script.clone()));
             }
-        };
+            for child in &tree.children {
+                self.import_node(child, stack, &mut new_of_old, &mut scripts)?;
+            }
+            Ok(())
+        });
+        if let Err(e) = built {
+            // Remove whatever was made before the problem was found.
+            self.delete(stack);
+            return Err(e);
+        }
         // Cards name their background by id, so link them once all exist.
         let mut cards = Vec::new();
-        collect_cards(tree, &mut cards);
+        for child in &tree.children {
+            collect_cards(child, &mut cards);
+        }
         for (card_id, background) in cards {
             let card = new_of_old[&card_id];
             let link = match background {
@@ -668,14 +761,25 @@ impl World {
         Ok((stack, scripts))
     }
 
+    fn set_imported_props(&mut self, obj: ObjId, node: &PartNode) -> Result<(), XtError> {
+        for (name, value) in &node.props {
+            if let Err(e) = self.set_prop(obj, name, value) {
+                return Err(XtError::new(format!(
+                    "The {name} of {} id {} in the file is wrong: {}",
+                    node.kind, node.id, e.message
+                )));
+            }
+        }
+        Ok(())
+    }
+
     fn import_node(
         &mut self,
         node: &PartNode,
-        parent: Option<ObjId>,
-        keep_ids: bool,
+        parent: ObjId,
         new_of_old: &mut HashMap<i64, ObjId>,
         scripts: &mut Vec<(ObjId, String)>,
-    ) -> Result<ObjId, XtError> {
+    ) -> Result<(), XtError> {
         let kind = match kind_of_word(&node.kind) {
             Some((kind, false)) => kind,
             _ => {
@@ -685,7 +789,7 @@ impl World {
                 )))
             }
         };
-        if let Some(p) = parent.and_then(|p| self.get(p)) {
+        if let Some(p) = self.get(parent) {
             if !may_contain(p.kind, kind) {
                 let message = format!(
                     "{} id {} can't hold a {} (id {})",
@@ -697,32 +801,16 @@ impl World {
                 return Err(XtError::new(message));
             }
         }
-        let created = if keep_ids {
-            // `create` takes the next id, so set it up to give this one.
-            let saved = self.next_id;
-            self.next_id = node.id - 1;
-            let created = self.create(kind, "", parent);
-            self.next_id = saved.max(node.id);
-            created
-        } else {
-            self.create(kind, "", parent)
-        };
+        let created = self.create_with_id(kind, "", Some(parent), Some(node.id));
         new_of_old.insert(node.id, created);
-        for (name, value) in &node.props {
-            if let Err(e) = self.set_prop(created, name, value) {
-                return Err(XtError::new(format!(
-                    "The {name} of {} id {} in the file is wrong: {}",
-                    node.kind, node.id, e.message
-                )));
-            }
-        }
+        self.set_imported_props(created, node)?;
         if !node.script.is_empty() {
             scripts.push((created, node.script.clone()));
         }
         for child in &node.children {
-            self.import_node(child, Some(created), keep_ids, new_of_old, scripts)?;
+            self.import_node(child, created, new_of_old, scripts)?;
         }
-        Ok(created)
+        Ok(())
     }
 
     // ----- properties --------------------------------------------------------

@@ -44,14 +44,14 @@ host allows it. The prompt allows it. `xt run file.xt` needs `--allow-shell`.
 
 ## Objects
 
-    create button "OK"                       -- it holds the reference
+    create button "OK"                       -- it holds button id 3 of stack id 1
     set the rect of button 1 to "10,20,110,50"
     create field "msg"
     put "hello" into field "msg"
     set the script of button 1 to "on mouseUp; put clicked; end mouseUp"
     send mouseUp to button 1                 -- the script's handler runs
 
-`:objects` at the prompt lists the stacks, cards, and controls.
+`:objects` at the prompt lists the stacks, cards, and controls. Ids are numbered per stack, so a reference names its stack; `button id 3` alone means the current stack.
 
 `part`, `control`, and `widget` mean any control (`the number of controls`, `part 2`). `create audioClip "beep"` and `create videoClip` make clips, which belong to the stack and have no rect.
 
