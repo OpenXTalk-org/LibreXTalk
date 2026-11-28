@@ -23,6 +23,24 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace
 
+  # The browser is a main target (CLAUDE.md 5.18): build the WebAssembly
+  # engine, run its JavaScript tests in Node.js, and run the Rust test
+  # suites themselves as WebAssembly.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown
+      - run: node --test crates/xt-wasm/js/test.mjs
+      - run: cargo test -p xt-core -p xt-stackfile -p xt-wasm --target wasm32-wasip1
+
   lint:
     runs-on: ubuntu-latest
     steps:

@@ -21,6 +21,7 @@ Inside the prompt, type `:help`. The up and down arrows recall earlier lines (ke
   - `interp.rs`: the virtual machine, with its own call stack
   - `tests.rs`: whole-script tests
 - `crates/xt-stackfile`: stack files. It turns a stack (as a plain `PartNode` tree from the engine) into `.xtstack.html` text and back.
+- `crates/xt-wasm`: the engine as a WebAssembly module, with `js/xt.mjs` for web pages and Node.js. Build it with `cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown` and test it with `node --test crates/xt-wasm/js/test.mjs`.
 - `crates/xt-cli`: the `xt` program. It supplies a `Host` that prints to the terminal, asks for dialog replies, and reads and writes stack files.
 
 ## Why bytecode
