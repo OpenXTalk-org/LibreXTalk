@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::{Host, Interpreter, XtError};
+use crate::{DialogRequest, Host, Interpreter, XtError};
 
 #[derive(Default)]
 struct Capture {
@@ -14,6 +14,11 @@ struct Capture {
     answers: Vec<usize>,
     /// Replies for `ask`, used in order. Empty means accept the default.
     asks: Vec<Option<String>>,
+    /// Dialog forms shown, as `form|prompt|default|types`.
+    dialogs: Vec<String>,
+    /// Replies for dialog forms, used in order. Empty means the headless
+    /// default: accept the suggested value, or cancel if there is none.
+    choices: Vec<Option<String>>,
 }
 
 impl Host for Capture {
@@ -41,6 +46,20 @@ impl Host for Capture {
         } else {
             self.asks.remove(0)
         }
+    }
+
+    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+        self.dialogs.push(format!(
+            "{:?}|{}|{}|{}",
+            request.form,
+            request.prompt,
+            request.default,
+            request.types.join("/")
+        ));
+        if !self.choices.is_empty() {
+            return self.choices.remove(0);
+        }
+        (!request.default.is_empty()).then(|| request.default.to_string())
     }
 
     // Record waits instead of really sleeping, so tests stay fast.
@@ -1437,6 +1456,109 @@ fn object_errors() {
         .contains("There is no card"));
 }
 
+// ----- the generic part kind and resource objects (OBJ-13, OBJ-14) ------------
+
+#[test]
+fn part_control_and_widget_mean_any_control() {
+    let script = r#"
+create button "OK"
+create field "Notes"
+put the number of parts
+put the number of controls
+put the number of widgets
+put the name of part 2
+put part 1
+put "hello" into field "Notes"
+put control "Notes"
+"#;
+    // `part 1` is a button, so its value is its reference; `control "Notes"`
+    // is a field, so its value is its text, as for any field reference.
+    assert_eq!(
+        run(script),
+        vec!["2", "2", "2", "Notes", "button id 4", "hello"]
+    );
+}
+
+#[test]
+fn a_part_reference_by_id_finds_any_control() {
+    let script = r#"
+create button "OK"
+put the name of part id 4
+put the name of button id 4
+"#;
+    assert_eq!(run(script), vec!["OK", "OK"]);
+    // A button id is not a field id, but it is a part id.
+    assert!(run_err("create button \"OK\"\nput the name of field id 4")
+        .message
+        .contains("There is no field id 4"));
+}
+
+#[test]
+fn a_plain_part_can_be_created() {
+    let script = r#"
+create part "Spacer"
+put it
+put the rect of part "Spacer"
+set the width of part "Spacer" to 40
+put the rect of it
+"#;
+    assert_eq!(run(script), vec!["part id 4", "0,0,100,100", "0,0,40,100"]);
+}
+
+#[test]
+fn clips_belong_to_the_stack() {
+    let script = r#"
+create audioClip "beep"
+put it
+create videoClip "intro"
+put it
+put the number of audioClips
+put the number of videoClips
+put the loudness of audioClip "beep"
+put the owner of videoClip 1
+put the number of parts
+"#;
+    assert_eq!(
+        run(script),
+        vec![
+            "audioClip id 4",
+            "videoClip id 5",
+            "1",
+            "1",
+            "100",
+            "stack id 1",
+            "0"
+        ]
+    );
+}
+
+#[test]
+fn clips_have_no_rect_and_stay_with_their_stack() {
+    let script = r#"
+create audioClip "beep"
+put the width of audioClip 1
+create card
+put the number of audioClips
+delete audioClip "beep"
+put the number of audioClips
+"#;
+    assert_eq!(run(script), vec!["", "1", "0"]);
+    assert!(run_err("create audioClip \"beep\" in card 1")
+        .message
+        .contains("An audioClip can only be made in a stack"));
+}
+
+#[test]
+fn a_clip_script_handles_a_message_and_passes_to_the_stack() {
+    let script = r#"
+create videoClip "intro"
+set the script of videoClip 1 to "on play; put the name of me; pass play; end play"
+set the script of this stack to "on play; put stack; end play"
+send play to videoClip "intro"
+"#;
+    assert_eq!(run(script), vec!["intro", "stack"]);
+}
+
 // ----- object scripts and messages -------------------------------------------
 
 #[test]
@@ -1535,4 +1657,108 @@ fn script_errors_are_reported_when_the_script_is_set() {
     assert!(err.message.contains("script has an error"));
     let err = run_err("set the script of this card to \"put 1\"");
     assert!(err.message.contains("only contain handlers"));
+}
+
+// ----- dialog forms of answer and ask (DLG-1 to DLG-3) -----------------------
+
+/// Run a script with these dialog replies and return the host afterwards.
+fn run_choosing(src: &str, choices: Vec<Option<String>>) -> Capture {
+    let mut interp = Interpreter::new();
+    let mut host = Capture {
+        choices,
+        ..Capture::default()
+    };
+    interp
+        .run_source(src, &mut host)
+        .expect("script should run");
+    host
+}
+
+#[test]
+fn each_dialog_form_reaches_the_host() {
+    let script = r#"
+answer file "Open which?" of type "txt" or "md"
+ask file "Save as:" with "notes.txt"
+answer folder "Where?"
+answer color with "red"
+answer colour
+answer effect
+answer record
+"#;
+    let host = run_choosing(script, vec![]);
+    assert_eq!(
+        host.dialogs,
+        vec![
+            "AnswerFile|Open which?||txt/md",
+            "AskFile|Save as:|notes.txt|",
+            "AnswerFolder|Where?||",
+            "AnswerColor||red|",
+            "AnswerColor|||",
+            "AnswerEffect|||",
+            "AnswerRecord|||",
+        ]
+    );
+}
+
+#[test]
+fn a_dialog_choice_goes_in_it() {
+    let script = r#"
+answer file "Open:"
+put it
+put the result
+"#;
+    let host = run_choosing(script, vec![Some("/tmp/a.txt".to_string())]);
+    assert_eq!(host.out, vec!["/tmp/a.txt", ""]);
+}
+
+#[test]
+fn a_cancelled_dialog_empties_it_and_sets_the_result() {
+    let script = r#"
+put "old" into it
+answer folder "Where?"
+put "[" & it & "]"
+put the result
+"#;
+    let host = run_choosing(script, vec![None]);
+    assert_eq!(host.out, vec!["[]", "Cancel"]);
+}
+
+#[test]
+fn the_headless_default_accepts_the_suggestion_or_cancels() {
+    let script = r#"
+ask file "Save as:" with "notes.txt"
+put it
+answer file "Open:"
+put the result
+"#;
+    assert_eq!(run(script), vec!["notes.txt", "Cancel"]);
+}
+
+#[test]
+fn dialog_parts_can_be_expressions() {
+    let script = r#"
+put "notes" into tName
+ask file "Save" && tName & ":" with tName & ".txt"
+put it
+"#;
+    let host = run_choosing(script, vec![]);
+    assert_eq!(host.dialogs, vec!["AskFile|Save notes:|notes.txt|"]);
+    assert_eq!(host.out, vec!["notes.txt"]);
+}
+
+#[test]
+fn dialog_words_are_still_variables_elsewhere() {
+    // `file` and `color` are not reserved: these answer a variable's value.
+    let script = r#"
+put "a.txt" into file
+answer file & "!"
+put it
+put "blue" into color
+answer color & " sky"
+put it
+"#;
+    let host = run_full(script);
+    assert!(host.dialogs.is_empty());
+    assert_eq!(host.prompts, vec!["a.txt!|OK", "blue sky|OK"]);
+    assert_eq!(host.out, vec!["OK", "OK"]);
 }

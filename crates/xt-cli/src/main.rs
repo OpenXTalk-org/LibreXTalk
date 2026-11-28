@@ -10,7 +10,7 @@ use std::process;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use xt_core::{parse_script, Host, Interpreter, XtError};
+use xt_core::{parse_script, DialogForm, DialogRequest, Host, Interpreter, XtError};
 
 /// The host for a terminal: the message box is standard output, and a wait
 /// really sleeps (the default `sleep` in the `Host` trait).
@@ -89,6 +89,45 @@ impl Host for StdoutHost {
                     Some(default.to_string())
                 } else {
                     Some(reply.to_string())
+                }
+            }
+        }
+    }
+
+    /// A terminal has no file or color pickers, so every dialog form becomes
+    /// a typed reply: a path, a color, or an effect name. Return alone takes
+    /// the suggested value, or cancels when there is none.
+    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+        let what = match request.form {
+            DialogForm::AnswerFile => "File to open",
+            DialogForm::AskFile => "File to save",
+            DialogForm::AnswerFolder => "Folder",
+            DialogForm::AnswerColor => "Color",
+            DialogForm::AnswerEffect => "Visual effect",
+            DialogForm::AnswerRecord => "Recording settings",
+        };
+        if !request.prompt.is_empty() {
+            println!("{}", request.prompt);
+        }
+        let mut label = what.to_string();
+        if !request.types.is_empty() {
+            label.push_str(&format!(" ({})", request.types.join(", ")));
+        }
+        if request.default.is_empty() {
+            print!("{label} (Return cancels): ");
+        } else {
+            print!("{label} [{}]: ", request.default);
+        }
+        io::stdout().flush().ok();
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => None, // end of input counts as cancelling
+            Ok(_) => {
+                let reply = line.trim();
+                match (reply.is_empty(), request.default.is_empty()) {
+                    (false, _) => Some(reply.to_string()),
+                    (true, false) => Some(request.default.to_string()),
+                    (true, true) => None,
                 }
             }
         }

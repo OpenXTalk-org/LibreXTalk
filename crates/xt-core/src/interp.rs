@@ -13,12 +13,12 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::ast::{BinOp, ChunkKind, ObjKind, Ordinal, Placement, WaitUnit};
+use crate::ast::{BinOp, ChunkKind, DialogForm, ObjKind, Ordinal, Placement, WaitUnit};
 use crate::builtins;
 use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, ObjShape, Op, SelShape};
 use crate::error::XtError;
-use crate::objects::{kind_name, ObjId, World};
+use crate::objects::{kind_matches, kind_name, ObjId, World};
 use crate::parser::parse_script;
 use crate::shell;
 
@@ -51,12 +51,40 @@ pub trait Host {
         Some(default.to_string())
     }
 
+    /// Show one of the dialog forms of `answer` and `ask`, such as a file
+    /// chooser (DLG-1). `None` means the person cancelled. One method serves
+    /// every form, so adding a form does not add a method to every host: a
+    /// host matches the forms it can show and leaves the rest to this default.
+    ///
+    /// The default suits a headless host: it accepts the suggested value if
+    /// there is one and otherwise cancels, because it cannot ask anyone.
+    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+        if request.default.is_empty() {
+            None
+        } else {
+            Some(request.default.to_string())
+        }
+    }
+
     /// May a script run this shell command? A script with shell access can
     /// do anything the person running it can, so the default is no. A host
     /// opts in by returning true.
     fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
         false
     }
+}
+
+/// What a script asked the host to show with a dialog form of `answer` or `ask`.
+#[derive(Debug)]
+pub struct DialogRequest<'a> {
+    pub form: DialogForm,
+    /// The text shown in the dialog; empty if the script gave none.
+    pub prompt: &'a str,
+    /// The suggested choice: a file name for `ask file`, a starting folder
+    /// for `answer file` and `answer folder`, a color for `answer color`.
+    pub default: &'a str,
+    /// File types to offer, as written in the script (`of type "txt" or "md"`).
+    pub types: &'a [String],
 }
 
 /// Where a call to `run` stopped.
@@ -402,6 +430,46 @@ impl Interpreter {
                 match host.ask(&prompt, &default) {
                     Some(reply) => {
                         self.write_var("it", reply);
+                        self.result = String::new();
+                    }
+                    None => {
+                        self.write_var("it", String::new());
+                        self.result = "Cancel".to_string();
+                    }
+                }
+            }
+            Op::Dialog {
+                form,
+                has_prompt,
+                has_default,
+                types,
+            } => {
+                let mut filters = Vec::with_capacity(types);
+                for _ in 0..types {
+                    filters.push(self.pop()?);
+                }
+                filters.reverse();
+                let default = if has_default {
+                    self.pop()?
+                } else {
+                    String::new()
+                };
+                let prompt = if has_prompt {
+                    self.pop()?
+                } else {
+                    String::new()
+                };
+                let request = DialogRequest {
+                    form,
+                    prompt: &prompt,
+                    default: &default,
+                    types: &filters,
+                };
+                // Like `ask`: the choice goes in `it`; a cancel leaves `it`
+                // empty and sets `the result` to Cancel (DLG-2).
+                match host.choose(&request) {
+                    Some(choice) => {
+                        self.write_var("it", choice);
                         self.result = String::new();
                     }
                     None => {
@@ -870,13 +938,15 @@ impl Interpreter {
     // ----- objects ---------------------------------------------------------
 
     /// Where to look for objects of `kind`: the container named, or else the
-    /// current stack (for cards and backgrounds) or the current card.
+    /// current stack (for cards, backgrounds, and clips) or the current card.
     fn container_for(&self, kind: ObjKind, container: Option<String>) -> Result<ObjId, XtError> {
         if let Some(text) = container {
             return self.world.lookup_ref(&text);
         }
         let default = match kind {
-            ObjKind::Background | ObjKind::Card => self.world.current_stack,
+            ObjKind::Background | ObjKind::Card | ObjKind::AudioClip | ObjKind::VideoClip => {
+                self.world.current_stack
+            }
             _ => self.world.current_card,
         };
         default.ok_or_else(|| XtError::new("There is no current card"))
@@ -894,7 +964,11 @@ impl Interpreter {
             return self
                 .world
                 .by_numeric_id(n)
-                .filter(|id| self.world.get(*id).is_some_and(|o| o.kind == kind))
+                .filter(|id| {
+                    self.world
+                        .get(*id)
+                        .is_some_and(|o| kind_matches(kind, o.kind))
+                })
                 .ok_or_else(|| XtError::new(format!("There is no {} id {n}", kind_name(kind))));
         }
 
@@ -999,7 +1073,7 @@ impl Interpreter {
                 self.world.current_card = self.world.first_card(stack);
                 Ok(stack)
             }
-            ObjKind::Card | ObjKind::Background => {
+            ObjKind::Card | ObjKind::Background | ObjKind::AudioClip | ObjKind::VideoClip => {
                 let stack = match parent_ref {
                     Some(text) => self.world.lookup_ref(&text)?,
                     None => self
@@ -1009,8 +1083,8 @@ impl Interpreter {
                 };
                 if self.world.get(stack).map(|o| o.kind) != Some(ObjKind::Stack) {
                     return Err(XtError::new(format!(
-                        "A {} can only be made in a stack",
-                        kind_name(kind)
+                        "{} can only be made in a stack",
+                        with_article(kind_name(kind))
                     )));
                 }
                 let created = self.world.create(kind, name, Some(stack));
@@ -1396,6 +1470,12 @@ pub fn format_number(n: f64) -> String {
     }
     let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// "A card", "An audioClip": the kind name with its article, capitalized.
+fn with_article(name: &str) -> String {
+    let vowel = name.starts_with(['a', 'e', 'i', 'o', 'u']);
+    format!("{} {name}", if vowel { "An" } else { "A" })
 }
 
 fn object_gone() -> XtError {

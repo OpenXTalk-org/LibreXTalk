@@ -139,6 +139,14 @@ pub enum Op {
     Ask {
         has_default: bool,
     },
+    /// Pop the type filters, then the default and the prompt if present,
+    /// ask the host to show the dialog, and store the choice in `it`.
+    Dialog {
+        form: DialogForm,
+        has_prompt: bool,
+        has_default: bool,
+        types: usize,
+    },
 }
 
 /// How an object is picked, and so which operands it takes from the stack.
@@ -446,6 +454,28 @@ impl Compiler {
                 }
                 self.emit(Op::Answer {
                     buttons: buttons.len(),
+                });
+            }
+            StmtKind::Dialog {
+                form,
+                prompt,
+                default,
+                types,
+            } => {
+                if let Some(p) = prompt {
+                    self.expr(p);
+                }
+                if let Some(d) = default {
+                    self.expr(d);
+                }
+                for t in types {
+                    self.expr(t);
+                }
+                self.emit(Op::Dialog {
+                    form: *form,
+                    has_prompt: prompt.is_some(),
+                    has_default: default.is_some(),
+                    types: types.len(),
                 });
             }
             StmtKind::Ask { prompt, default } => {
