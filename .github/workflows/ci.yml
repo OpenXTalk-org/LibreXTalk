@@ -39,6 +39,7 @@ jobs:
           node-version: 22
       - run: cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown
       - run: node --test crates/xt-wasm/js/test.mjs
+      - run: node --test web/test.mjs
       - run: cargo test -p xt-core -p xt-stackfile -p xt-wasm --target wasm32-wasip1
 
   lint:

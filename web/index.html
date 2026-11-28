@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libreXTalk</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fafafa;
+    --panel: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6b6b70;
+    --line: #d9d9de;
+    --accent: #2f6fde;
+    --accent-text: #ffffff;
+    --error: #b3261e;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161618;
+      --panel: #1f1f22;
+      --text: #ececf0;
+      --muted: #9b9ba3;
+      --line: #36363b;
+      --accent: #6c9cff;
+      --accent-text: #0b0b0d;
+      --error: #ff8a80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .status { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 760px) { main { grid-template-columns: minmax(0, 1fr); } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+  textarea { width: 100%; min-height: 320px; resize: vertical; font: 13px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+  button.default { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #messages { font: 13px/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace; min-height: 120px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .message { padding: 1px 0; }
+  .message.error { color: var(--error); }
+  #stacks { list-style: none; margin: 0; padding: 0; }
+  #stacks li { display: flex; gap: 8px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  #stacks li:first-child { border-top: 0; }
+  #stacks .name { flex: 1; min-width: 8em; overflow-wrap: anywhere; }
+  #stacks button { padding: 2px 10px; font-size: 13px; }
+  .empty { color: var(--muted); font-size: 13px; }
+  .side { display: grid; gap: 16px; align-content: start; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); padding: 18px; min-width: min(360px, 90vw); max-width: 90vw; }
+  dialog::backdrop { background: rgb(0 0 0 / .35); }
+  dialog .prompt { margin: 0 0 12px; white-space: pre-wrap; }
+  dialog .body input[type="text"], dialog .body select { width: 100%; font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>libreXTalk</h1>
+  <span class="status" id="status">Loading the engine…</span>
+</header>
+<main>
+  <section>
+    <h2>Script</h2>
+    <textarea id="script" spellcheck="false" aria-label="Script">-- Try the dialogs, then save and reopen a stack.
+answer "Hello from libreXTalk in the browser!" with "Continue" or "Stop"
+if it is "Stop" then exit to top
+ask "What is your name?" with "friend"
+put "Hello, " &amp; it &amp; "!"
+answer color with "#2f6fde"
+put "You chose " &amp; it
+
+create stack "Browser Demo"
+create button "Greet"
+set the script of button "Greet" to "on mouseUp; put greeted; end mouseUp"
+save this stack as "demo.xtstack.html"
+put "Saved " &amp; the filename of this stack
+send mouseUp to button "Greet"</textarea>
+    <div class="row">
+      <button id="run" class="default" disabled>Run</button>
+      <button id="reset" disabled>New engine</button>
+      <button id="clear">Clear messages</button>
+    </div>
+  </section>
+  <div class="side">
+    <section>
+      <h2>Message box</h2>
+      <div id="messages" role="log" aria-live="polite"></div>
+    </section>
+    <section>
+      <h2>Stack files</h2>
+      <ul id="stacks"></ul>
+      <div class="row">
+        <button id="open-file">Open a stack file…</button>
+        <input id="file-input" type="file" accept=".html,.xtstack.html" hidden>
+      </div>
+    </section>
+  </div>
+</main>
+<script type="module">
+import { XtEngine } from "../crates/xt-wasm/js/xt.mjs";
+import { BrowserHost } from "./host.mjs";
+import { StackLibrary } from "./library.mjs";
+import { PageUi } from "./ui.mjs";
+
+const WASM = "../target/wasm32-unknown-unknown/wasm-release/xt_wasm.wasm";
+const $ = (id) => document.getElementById(id);
+
+const ui = new PageUi($("messages"));
+let storage = null;
+try {
+  storage = window.localStorage;
+} catch {
+  // Storage is switched off (for example in some private windows): saved
+  // stacks then last only until the page is closed.
+}
+const library = new StackLibrary(storage);
+let wasmBytes = null;
+let host = null;
+
+async function newEngine() {
+  const engine = await XtEngine.instantiate(wasmBytes);
+  host = new BrowserHost(engine, ui, library);
+}
+
+function showStacks() {
+  const list = $("stacks");
+  list.replaceChildren();
+  const names = library.savedNames();
+  if (names.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No saved stacks yet. Scripts save with: save this stack as \"name.xtstack.html\"";
+    list.append(li);
+    return;
+  }
+  for (const name of names) {
+    const li = document.createElement("li");
+    const label = document.createElement("span");
+    label.className = "name";
+    label.textContent = name;
+    const download = document.createElement("button");
+    download.textContent = "Download";
+    download.addEventListener("click", () => {
+      const blob = new Blob([library.open(name)], { type: "text/html" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    });
+    const remove = document.createElement("button");
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      library.remove(name);
+      showStacks();
+    });
+    li.append(label, download, remove);
+    list.append(li);
+  }
+}
+
+$("run").addEventListener("click", async () => {
+  $("run").disabled = true;
+  $("status").textContent = "Running…";
+  try {
+    await host.run($("script").value);
+    $("status").textContent = "Finished.";
+  } catch (e) {
+    const line = document.createElement("div");
+    line.className = "message error";
+    line.textContent = `Error: ${e.message}`;
+    $("messages").append(line);
+    $("status").textContent = "Stopped with an error.";
+  } finally {
+    $("run").disabled = false;
+    showStacks();
+  }
+});
+
+$("reset").addEventListener("click", async () => {
+  await newEngine();
+  $("status").textContent = "New engine: variables and stacks start fresh.";
+});
+
+$("clear").addEventListener("click", () => $("messages").replaceChildren());
+
+$("open-file").addEventListener("click", () => $("file-input").click());
+$("file-input").addEventListener("change", async () => {
+  const file = $("file-input").files?.[0];
+  if (!file) return;
+  library.addPicked(file.name, await file.text());
+  // Opening it from a script makes it a stack in the engine, with its
+  // scripts compiled, and goes to its first card.
+  $("script").value = `open stack "${file.name.replaceAll('"', "")}"\nput "Opened " & the name of this stack`;
+  $("status").textContent = `"${file.name}" is ready: press Run to open it.`;
+  $("file-input").value = "";
+});
+
+try {
+  const response = await fetch(WASM);
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  wasmBytes = await response.arrayBuffer();
+  await newEngine();
+  $("run").disabled = false;
+  $("reset").disabled = false;
+  $("status").textContent = "Ready.";
+} catch (e) {
+  $("status").textContent =
+    `Couldn't load the engine (${e.message}). Build it with: cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown, then serve the project with: node tools/serve.mjs`;
+}
+showStacks();
+</script>
+</body>
+</html>
