@@ -1,0 +1,60 @@
+# Publish the browser test build to GitHub Pages
+# (https://openxtalk-org.github.io/LibreXTalk/) on every push to main.
+#
+# The site is the single-file page from tools/bundle.mjs: the engine, its
+# JavaScript, and the page in one HTML file, which works the same online
+# and when downloaded and opened from disk. The engine's .wasm and xt.mjs
+# are published beside it for anyone embedding the engine in a page.
+
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time; a newer push replaces a waiting one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --locked -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown
+      # Only publish a build whose browser tests pass.
+      - run: node --test crates/xt-wasm/js/test.mjs web/test.mjs web/bundle.test.mjs
+      - name: Assemble the site
+        run: |
+          export XT_BUILD_LABEL="test build ${GITHUB_SHA:0:7}"
+          mkdir -p _site/engine
+          node tools/bundle.mjs _site/index.html
+          cp _site/index.html _site/librextalk.html
+          cp target/wasm32-unknown-unknown/wasm-release/xt_wasm.wasm _site/engine/
+          cp crates/xt-wasm/js/xt.mjs _site/engine/
+      - uses: actions/upload-pages-artifact@v3
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

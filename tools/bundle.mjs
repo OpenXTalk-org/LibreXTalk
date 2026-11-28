@@ -6,6 +6,9 @@
 //   node tools/bundle.mjs            writes target/web/librextalk.html
 //   node tools/bundle.mjs out.html   writes somewhere else
 //
+// XT_BUILD_LABEL, if set, is shown next to the title, for example
+// "test build 5e6f168" on the public site (.github/workflows/pages.yml).
+//
 // Why: a page opened as a file (file://) may not fetch other files, so it
 // can't load the .wasm, and Chrome also refuses to import JavaScript
 // modules from files. Neither rule stops WebAssembly itself from running,
@@ -88,7 +91,12 @@ const script = [
 // the inlined code may contain one.
 if (/<\/script/i.test(script)) throw new Error("The inlined code contains </script");
 
-const html = page.slice(0, open) + '<script type="module">\n' + script + "\n" + page.slice(close);
+let html = page.slice(0, open) + '<script type="module">\n' + script + "\n" + page.slice(close);
+const label = process.env.XT_BUILD_LABEL?.trim();
+if (label) {
+  const escaped = label.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  html = html.replace("<h1>libreXTalk</h1>", `<h1>libreXTalk</h1>\n  <span class="status build">${escaped}</span>`);
+}
 await mkdir(dirname(out), { recursive: true });
 await writeFile(out, html);
 console.log(`Wrote ${out} (${Math.round(html.length / 1024)} KB). Open it from disk; no server needed.`);
