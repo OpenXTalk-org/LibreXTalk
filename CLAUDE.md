@@ -352,20 +352,20 @@ The maintainer wants a Rust toolchain target for the **Wii and Wii U (PowerPC)**
 6. **Packaging:** a nightly Rust build with `-Zbuild-std=core,alloc` and a custom target definition, linked with devkitPPC, converted to `.dol` with devkitPro's `elf2dol`, plus the metadata files the Homebrew Channel expects. CI needs a devkitPro container and a nightly job that is allowed to lag the stable jobs.
 7. **Licensing:** ogc-rs is MIT. Check libogc, devkitPro, `wut`, and any other dependency against the `cargo-deny` policy before using it. Keep all console code in its own crates so the core stays clean.
 
-### 5.16 Dialog forms of `ask` and `answer` (planned)
+### 5.16 Dialog forms of `ask` and `answer` (built; syntax Provisional)
 
-Today `answer "prompt" with "A" or "B"` and `ask "prompt" with "default"` are the only forms. Each is one `Host` method with a headless default. The planned forms follow the same pattern, one `Host` method each, so a terminal, a GUI, and the test host can each answer them their own way:
+Besides `answer "prompt" with "A" or "B"` and `ask "prompt" with "default"`, the forms below exist. **All of them go through one `Host` method, `choose(&DialogRequest)`** (form, prompt, default, types), so adding a form never adds a method every host must write: a host matches the forms it can show. The default `choose` suits a headless host: it accepts the suggested value, or cancels when there is none. The terminal (`xt`) asks for a typed reply. Provisional rule IDs: DLG-1 (the forms), DLG-2 (`it` and `the result`), DLG-3 (contextual parsing).
 
 | Form | Dialog | Result |
 |---|---|---|
-| `answer file "prompt" [of type ...]` | choose an existing file | the path in `it`, empty if cancelled |
-| `ask file "prompt" [with "default name"]` | choose a place to save a file | the path in `it` |
-| `answer folder "prompt"` | choose a folder | the path in `it` |
-| `answer color [with "default"]` | color picker | the color in `it` |
+| `answer file [prompt] [with folder] [of type t {or t}]` | choose an existing file | the path in `it`, empty if cancelled |
+| `ask file [prompt] [with "default name"]` | choose a place to save a file | the path in `it` |
+| `answer folder [prompt] [with folder]` | choose a folder | the path in `it` |
+| `answer color` / `answer colour` `[with "default"]` | color picker | the color in `it` |
 | `answer effect` | choose a visual effect | the effect in `it` |
-| `answer record` | sound-recording settings | settings stored by the host |
+| `answer record` | sound-recording settings | the host's description in `it` |
 
-Cancelling puts empty in `it` and `Cancel` in `the result`. Open: the exact syntax of each form (types, multiple files, defaults), how paths are written on each platform, and whether these move into the standard library once syntax declarations exist (5.9). Paths returned by a dialog should count as permission to touch that file (5.13).
+Cancelling puts empty in `it` and `Cancel` in `the result`. The words are not reserved: `answer file` is the dialog only when the end of the line, `with`, `of`, or a prompt follows, so `answer file & "!"` still shows a variable named `file`. Open: LiveCode's `with type`, choosing several files (`answer files`), what `answer effect` and `answer record` return, how paths are written on each platform, and whether these move into the standard library once syntax declarations exist (5.9). Paths returned by a dialog should count as permission to touch that file (5.13).
 
 ### 5.17 Our own stack file format (design in progress)
 
@@ -387,7 +387,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 - **HTML5 backend:** `xt-` custom elements become live widgets; DOM events become messages (`mouseUp`), and property changes update the elements. This is a toolkit backend (roadmap D) aimed at the DOM.
 - **Runtime placement, chosen when saving:** *embedded* (the WASM as base64 in the file; works offline from one file; adds the runtime's size to every stack; identical bytes every save, so no diff churn) or *linked* (`<script src="xt-runtime.js">` beside the stack; tiny). Proposed default: linked; `with runtime` embeds. The embedded runtime carries a version so a newer engine can offer to update it. Script source stays the truth; the page compiles scripts when it loads (5.11).
 - **Order:** `no_std` core, WASM build in CI, `xt-wasm` and the browser host, the text stack format (5.17), then the HTML5 backend.
-- **Toolchain note:** the maintainer's Rust is Homebrew's and has no `wasm32` target. rustup is the usual fix, and the Wii target (5.15) needs rustup's nightly anyway.
+- **Toolchain:** the maintainer uses rustup's stable toolchain (`~/.cargo/bin`, put ahead of Homebrew on PATH in `~/.zprofile`; Homebrew's `rust` stays installed because another formula needs it to build). The `wasm32-unknown-unknown` target is installed, and `cargo build -p xt-core --target wasm32-unknown-unknown` succeeds (2026-11-27). The Wii target (5.15) will need rustup's nightly plus `rust-src`.
 
 ---
 
@@ -396,7 +396,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 **Done (compiles on the maintainer's machine through the chunk and built-in steps; later steps unverified)**
 
 - Lexer, parser, compiler, VM, REPL, `xt run`.
-- Commands: `put` (`into`/`before`/`after`), `get`, `set the itemDelimiter to`, `set the <prop> of <object> to`, `add`/`subtract`/`multiply`/`divide`, `delete` (chunks and objects), `return`, `global`, `exit` (handler, `repeat`, `to top`), `next repeat`, `wait`, `try`/`catch`/`end try`, `throw`, `answer`, `ask`, `do <text> as <shell>`, `create`, `go`, `send`, `pass`, `show`, `hide`.
+- Commands: `put` (`into`/`before`/`after`), `get`, `set the itemDelimiter to`, `set the <prop> of <object> to`, `add`/`subtract`/`multiply`/`divide`, `delete` (chunks and objects), `return`, `global`, `exit` (handler, `repeat`, `to top`), `next repeat`, `wait`, `try`/`catch`/`end try`, `throw`, `answer`, `ask`, the dialog forms `answer file|folder|color|effect|record` and `ask file` (5.16), `do <text> as <shell>`, `create`, `go`, `send`, `pass`, `show`, `hide`.
 - Control flow: one-line and block `if`/`then`/`else`/`else if`/`end if`; `repeat forever | while | until | N times | with i = a to|down to b`.
 - Handlers: `on` and `function`, parameters separated by spaces or commas or both, calls in either comma style or space style, `the result`, recursion, `global`.
 - Chunk expressions (section 7).
@@ -459,7 +459,7 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 
 - `the NAME of X` resolves to a built-in function if one exists (`the length of x`), otherwise an object property. Parenthesized `name(args)` always calls.
 - User handlers override built-in functions of the same name.
-- `answer`/`ask` are host calls; the default host picks the first button and the default text.
+- `answer`/`ask` are host calls; the default host picks the first button and the default text. The dialog forms (`answer file`, `ask file`, `answer folder`, `answer color`, `answer effect`, `answer record`) go through `Host::choose` (5.16).
 - `try ... catch e ... end try` catches runtime errors (not syntax errors). `throw "message"` raises one.
 - `shell(cmd)` blocks the host and returns standard output (CRLF changed to LF, trailing newlines kept), setting `the result` to the exit status. Standard error is discarded; add `2>&1` to see it. Commands get no standard input. `do <cmd> as <shell>` with `shell`, `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `csh`, `tcsh`, `powershell`, `pwsh`, or `cmd` pauses only the script, puts output in `it` and the exit status in `the result`. **Shell access is denied unless the host allows it.** The prompt allows it; `xt run file.xt` needs `--allow-shell`.
 

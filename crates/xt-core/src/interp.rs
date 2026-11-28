@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::ast::{BinOp, ChunkKind, ObjKind, Ordinal, Placement, WaitUnit};
+use crate::ast::{BinOp, ChunkKind, DialogForm, ObjKind, Ordinal, Placement, WaitUnit};
 use crate::builtins;
 use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, ObjShape, Op, SelShape};
@@ -51,12 +51,40 @@ pub trait Host {
         Some(default.to_string())
     }
 
+    /// Show one of the dialog forms of `answer` and `ask`, such as a file
+    /// chooser (DLG-1). `None` means the person cancelled. One method serves
+    /// every form, so adding a form does not add a method to every host: a
+    /// host matches the forms it can show and leaves the rest to this default.
+    ///
+    /// The default suits a headless host: it accepts the suggested value if
+    /// there is one and otherwise cancels, because it cannot ask anyone.
+    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+        if request.default.is_empty() {
+            None
+        } else {
+            Some(request.default.to_string())
+        }
+    }
+
     /// May a script run this shell command? A script with shell access can
     /// do anything the person running it can, so the default is no. A host
     /// opts in by returning true.
     fn allow_shell(&mut self, _shell: &str, _script: &str) -> bool {
         false
     }
+}
+
+/// What a script asked the host to show with a dialog form of `answer` or `ask`.
+#[derive(Debug)]
+pub struct DialogRequest<'a> {
+    pub form: DialogForm,
+    /// The text shown in the dialog; empty if the script gave none.
+    pub prompt: &'a str,
+    /// The suggested choice: a file name for `ask file`, a starting folder
+    /// for `answer file` and `answer folder`, a color for `answer color`.
+    pub default: &'a str,
+    /// File types to offer, as written in the script (`of type "txt" or "md"`).
+    pub types: &'a [String],
 }
 
 /// Where a call to `run` stopped.
@@ -402,6 +430,46 @@ impl Interpreter {
                 match host.ask(&prompt, &default) {
                     Some(reply) => {
                         self.write_var("it", reply);
+                        self.result = String::new();
+                    }
+                    None => {
+                        self.write_var("it", String::new());
+                        self.result = "Cancel".to_string();
+                    }
+                }
+            }
+            Op::Dialog {
+                form,
+                has_prompt,
+                has_default,
+                types,
+            } => {
+                let mut filters = Vec::with_capacity(types);
+                for _ in 0..types {
+                    filters.push(self.pop()?);
+                }
+                filters.reverse();
+                let default = if has_default {
+                    self.pop()?
+                } else {
+                    String::new()
+                };
+                let prompt = if has_prompt {
+                    self.pop()?
+                } else {
+                    String::new()
+                };
+                let request = DialogRequest {
+                    form,
+                    prompt: &prompt,
+                    default: &default,
+                    types: &filters,
+                };
+                // Like `ask`: the choice goes in `it`; a cancel leaves `it`
+                // empty and sets `the result` to Cancel (DLG-2).
+                match host.choose(&request) {
+                    Some(choice) => {
+                        self.write_var("it", choice);
                         self.result = String::new();
                     }
                     None => {

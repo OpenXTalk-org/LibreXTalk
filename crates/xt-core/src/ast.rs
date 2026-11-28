@@ -90,6 +90,23 @@ pub enum ObjKind {
     VideoClip,
 }
 
+/// The dialog forms of `answer` and `ask` beyond buttons and text (DLG-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogForm {
+    /// `answer file`: choose an existing file to open.
+    AnswerFile,
+    /// `ask file`: choose a name and place to save a file.
+    AskFile,
+    /// `answer folder`: choose a folder.
+    AnswerFolder,
+    /// `answer color`: choose a color.
+    AnswerColor,
+    /// `answer effect`: choose a visual effect.
+    AnswerEffect,
+    /// `answer record`: choose sound-recording settings.
+    AnswerRecord,
+}
+
 /// How to pick one object of a kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ObjSel {
@@ -271,6 +288,15 @@ pub enum StmtKind {
     Ask {
         prompt: Expr,
         default: Option<Expr>,
+    },
+    /// `answer file "Open:" of type "txt"`, `ask file "Save as:" with "a.txt"`,
+    /// `answer folder`, `answer color`, `answer effect`, `answer record`.
+    /// Every part is optional; which parts a form takes is up to the parser.
+    Dialog {
+        form: DialogForm,
+        prompt: Option<Expr>,
+        default: Option<Expr>,
+        types: Vec<Expr>,
     },
     /// `get <expr>` stores the value in `it`.
     Get(Expr),

@@ -795,6 +795,9 @@ impl Parser {
             }
             "answer" => {
                 self.pos += 1;
+                if let Some(form) = self.dialog_form_at(false) {
+                    return self.parse_dialog(form);
+                }
                 let prompt = self.parse_expr()?;
                 let mut buttons = Vec::new();
                 if self.is_word("with") {
@@ -813,6 +816,9 @@ impl Parser {
             }
             "ask" => {
                 self.pos += 1;
+                if let Some(form) = self.dialog_form_at(true) {
+                    return self.parse_dialog(form);
+                }
                 let prompt = self.parse_expr()?;
                 let default = if self.is_word("with") {
                     self.pos += 1;
@@ -1098,6 +1104,95 @@ impl Parser {
             }
             _ => Err(XtError::at(tok.line, tok.col, "Expected a value here")),
         }
+    }
+
+    /// After `answer` or `ask`: is this one of the dialog forms (DLG-1)?
+    /// The words are not reserved, so `answer file` is the dialog only when
+    /// what follows could not continue an expression that uses a variable
+    /// named `file`: the end of the line, `with`, `of`, or the start of a
+    /// prompt. `answer file & "!"` still shows the variable (DLG-3).
+    fn dialog_form_at(&self, after_ask: bool) -> Option<DialogForm> {
+        let word = self.word_at(0)?.to_lowercase();
+        let form = match (after_ask, word.as_str()) {
+            (false, "file") => DialogForm::AnswerFile,
+            (true, "file") => DialogForm::AskFile,
+            (false, "folder") => DialogForm::AnswerFolder,
+            (false, "color" | "colour") => DialogForm::AnswerColor,
+            (false, "effect") => DialogForm::AnswerEffect,
+            (false, "record") => DialogForm::AnswerRecord,
+            _ => return None,
+        };
+        let takes_prompt = matches!(
+            form,
+            DialogForm::AnswerFile | DialogForm::AskFile | DialogForm::AnswerFolder
+        );
+        let next_ok = self.is_line_end_at(1)
+            || self.is_word_at(1, "with")
+            || (takes_prompt && (self.is_word_at(1, "of") || self.starts_prompt_at(1)));
+        next_ok.then_some(form)
+    }
+
+    /// Could the token at `offset` begin a prompt: a string, a number, a
+    /// parenthesis, or a word that is not an operator?
+    fn starts_prompt_at(&self, offset: usize) -> bool {
+        if self.starts_selector(offset) {
+            return true;
+        }
+        match self.word_at(offset) {
+            Some(w) => !matches!(
+                w.to_lowercase().as_str(),
+                "and" | "or" | "is" | "contains" | "div" | "mod" | "not" | "to" | "into"
+            ),
+            None => false,
+        }
+    }
+
+    /// The rest of a dialog form, after the word that names it:
+    /// `answer file [prompt] [with default] [of type t {or t}]`,
+    /// `ask file [prompt] [with default]`, `answer folder [prompt] [with default]`,
+    /// `answer color [with default]`, `answer effect`, `answer record`.
+    fn parse_dialog(&mut self, form: DialogForm) -> Result<StmtKind, XtError> {
+        self.pos += 1; // the form's word
+        let takes_prompt = matches!(
+            form,
+            DialogForm::AnswerFile | DialogForm::AskFile | DialogForm::AnswerFolder
+        );
+        let prompt = if takes_prompt
+            && !self.is_line_end_at(0)
+            && !self.is_word("with")
+            && !self.is_word("of")
+        {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        let default = if self.is_word("with")
+            && !matches!(form, DialogForm::AnswerEffect | DialogForm::AnswerRecord)
+        {
+            self.pos += 1;
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        let mut types = Vec::new();
+        if form == DialogForm::AnswerFile && self.is_word("of") && self.is_word_at(1, "type") {
+            self.pos += 2;
+            loop {
+                // Level 2 skips `or`, which separates the types here.
+                types.push(self.parse_binary(2)?);
+                if self.is_word("or") {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(StmtKind::Dialog {
+            form,
+            prompt,
+            default,
+            types,
+        })
     }
 
     /// After `of` or `to`: an object, or any expression that holds a reference.

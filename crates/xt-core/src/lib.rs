@@ -22,5 +22,5 @@ mod tests;
 
 pub use ast::*;
 pub use error::XtError;
-pub use interp::{format_number, Host, Interpreter, Status};
+pub use interp::{format_number, DialogRequest, Host, Interpreter, Status};
 pub use parser::parse_script;
