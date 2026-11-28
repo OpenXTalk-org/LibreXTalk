@@ -17,10 +17,14 @@ These came after the first version of this file and change or extend it. Details
 5. **Parts are defined with a `part ... end part` syntax, and the standard library creates the standard part set from such definitions at startup.** The hard-coded prototype tables in `objects.rs` are therefore temporary (5.10).
 6. **Cached precompiled bytecode is welcome**, as long as the engine can recompile from source on the fly whenever the source changes. The language must be extensible through this mechanism, like LiveCode Builder, but **without a second, side-car language** (5.11).
 7. **Interoperability with other xTalks is a long-term goal**: LiveCode and OpenXTalk first, then HyperTalk, then OpenXION, then WebTalk (Tom Perry), SuperCard, Oracle Media Objects, Macromedia Lingo, and others. That includes **importing and exporting stack files**, with graceful downgrading and warnings about data loss (5.12).
-8. **A PDF describing the stack file formats OpenXTalk supports was mentioned but never reached the assistant.** Ask the maintainer to supply it before designing the importers and exporters.
+8. **The stack file format PDF has arrived:** `The OXT stack file formats.pdf` (Seth Morrow, 2026-11-19) in the repo root, local only until its author agrees to publish it. It describes the binary REVO format (versions 2700 to 8100, big-endian tagged records) and script-only stacks. It was written from GPL engine source, so it is **docs only**: implement from the PDF, never consult the source, do not reuse its C++ function names (section 4, 5.12).
 9. **More standard object types:** besides button, image, field, graphic, and so on, the standard set includes **resource objects** (`file`, `url`, `audioClip`/`audioClips`, `videoClip`/`videoClips`) and a **generic `part`** kind. `widget(s)` and `control(s)` are synonyms for `part`, as in OpenXTalk, for HyperCard compatibility. All are defined with `part ... end part` (5.10, 5.13).
 10. **`the platform` and `the processor` are part of the core language**, because libraries use them to choose implementations (for example, allowing AppleScript and JavaScript-for-Automation scripting only on macOS). `the environment` comes later (5.14).
 11. **A Nintendo Wii / Wii U PowerPC target** (compiled to `.dol`) joins the list of platforms. It forces the core to be `no_std + alloc` capable and to define byte order in every binary format (5.15).
+12. **Not supported: EPS objects** (Display PostScript is gone; PDF replaced it). **Not yet: IDE palettes** (the magnify and colors palette objects). **Later: a player control.** An OXT import that meets any of these lists it in the loss report; it never drops it silently (5.12).
+13. **More `ask` and `answer` forms** are planned: `ask file`, `answer file`, `answer folder`, `answer color`, `answer effect`, `answer record`, and similar. Each is a host dialog, so each is a `Host` method with a headless default (5.16).
+14. **A stack file format of our own** is being designed: a version-control-friendly text form that is valid HTML (custom `xt-` elements, scripts in `<script type="text/x-xtalk">`, binary resources as wrapped base64 data URLs, so the file renders when opened in a browser), plus a compact binary sibling. The prompt needs `open stack` and `save stack` (5.17). Extensions: `.xtstack` (binary) and `.xtstack.html` (text).
+15. **A stack saved as `.xtstack.html` should run as an offline web page**, interactivity included, using a minimal build of the engine compiled to WebAssembly (5.18).
 
 ---
 
@@ -65,7 +69,7 @@ These came after the first version of this file and change or extend it. Details
 | R13 | Syntax extension written in xTalk itself, with no side-car language (5.9). | Open, central design question |
 | R14 | The standard part set is created by the standard library from `part ... end part` definitions at startup (5.10). | Decided |
 | R15 | Cached precompiled bytecode, always recompilable from source; libraries and extensions extensible through it (5.11). | Decided direction |
-| R16 | Import and export of other xTalk stack formats, with graceful downgrading and loss reports (5.12). | Long-term goal; needs the format PDF |
+| R16 | Import and export of other xTalk stack formats, with graceful downgrading and loss reports (5.12). | Long-term goal; format PDF received |
 | R17 | Standard object kinds include a generic `part` (synonyms `widget`, `control`) and resource objects `file`, `url`, `audioClip`, `videoClip` (5.13). | Decided direction |
 | R18 | `the platform` and `the processor` in the core language; `the environment` later (5.14). | Decided |
 | R19 | A Wii / Wii U PowerPC target producing `.dol` (5.15). | Roadmap target |
@@ -114,7 +118,7 @@ These came after the first version of this file and change or extend it. Details
 | WyldCard (defano, Java) | MIT | HyperTalk semantic reference, HyperCard stack import. |
 | ViperCard, LiveCode engine | GPL | **Do not use.** |
 | Executor (ctm) | MIT per HyperZebra's notice | Behavior reference only. |
-| "OpenXTalk supported stack file formats" PDF | Maintainer-supplied. **Not yet received by the assistant.** | Defines the import and export targets (5.12). Ask for it again. |
+| "OpenXTalk supported stack file formats" PDF | Written by Seth Morrow (2026-11-19) from OpenXTalk Beyond's GPL engine source (commit d3434c1b). Maintainer-supplied, kept in the repo root, not committed. | **Docs only.** Defines the import and export targets (5.12). Implement from the PDF; never read the source it cites. |
 | ogc-rs and ogc-sys (rust-wii, Rust bindings to devkitPro's libogc) | MIT (ogc-rs). `no_std`, needs nightly Rust. | Candidate for the Wii backend (5.15). Check libogc's and devkitPro's own licenses before depending on them. |
 | luma (rust-wii, "a Rust rewrite of libogc") | Not checked | Possible alternative to libogc bindings. |
 | rust-wiiu book and `wut`/`wups` crates | Not checked | Candidate base for the Wii U target. Verify each crate's license and output format (5.15). |
@@ -309,7 +313,7 @@ Consequences: `ObjKind` and the prototype tables in `objects.rs` become data loa
 ### 5.12 Interoperability and stack formats (long-term goal)
 
 - **Dialects, in priority order:** LiveCode and OpenXTalk; HyperCard's HyperTalk; OpenXION; then Tom Perry's WebTalk, SuperCard, Oracle Media Objects (MediaTalk), Macromedia Lingo, and others. Mechanism: **dialect profiles**, each a bundle of alias tables, syntax declarations, and library modules, plus importers and exporters.
-- **Stack file formats:** the maintainer wants to import from and export to the formats OpenXTalk supports, described in a PDF that has not been received. For environments with fewer capabilities (HyperCard 2.4, MetaCard 2.7, and so on) the export must **downgrade as gracefully as possible and tell the user what will be lost** (for example OpenXTalk or LiveCode 8 widgets) before saving. Never drop data silently; keep the original where possible.
+- **Stack file formats:** the maintainer wants to import from and export to the formats OpenXTalk supports, described in `The OXT stack file formats.pdf`: binary REVO stacks (versions 2700, 5500, 7000, 8000, 8100; OXT writes 7000 unless a widget needs 8000), the older MetaCard header, and script-only stacks. For environments with fewer capabilities (HyperCard 2.4, MetaCard 2.7, and so on) the export must **downgrade as gracefully as possible and tell the user what will be lost** (for example OpenXTalk or LiveCode 8 widgets) before saving. Never drop data silently; keep the original where possible.
 - Design needs: a capability matrix per format; a conversion report with three outcomes (lossless, degraded with a substitute, dropped); a warning before saving to an older format; the part definitions (5.10) carrying capability flags that importers and exporters consult.
 
 ### 5.13 Generic `part`, resource objects, and synonyms (Decided direction)
@@ -347,6 +351,43 @@ The maintainer wants a Rust toolchain target for the **Wii and Wii U (PowerPC)**
 5. **A console-specific backend** (`librextalk-backend-wii`, later `-wiiu`) that draws with the console's video API and maps the Wii Remote and GameCube controller to pointer and key events. Text entry needs an on-screen keyboard design.
 6. **Packaging:** a nightly Rust build with `-Zbuild-std=core,alloc` and a custom target definition, linked with devkitPPC, converted to `.dol` with devkitPro's `elf2dol`, plus the metadata files the Homebrew Channel expects. CI needs a devkitPro container and a nightly job that is allowed to lag the stable jobs.
 7. **Licensing:** ogc-rs is MIT. Check libogc, devkitPro, `wut`, and any other dependency against the `cargo-deny` policy before using it. Keep all console code in its own crates so the core stays clean.
+
+### 5.16 Dialog forms of `ask` and `answer` (planned)
+
+Today `answer "prompt" with "A" or "B"` and `ask "prompt" with "default"` are the only forms. Each is one `Host` method with a headless default. The planned forms follow the same pattern, one `Host` method each, so a terminal, a GUI, and the test host can each answer them their own way:
+
+| Form | Dialog | Result |
+|---|---|---|
+| `answer file "prompt" [of type ...]` | choose an existing file | the path in `it`, empty if cancelled |
+| `ask file "prompt" [with "default name"]` | choose a place to save a file | the path in `it` |
+| `answer folder "prompt"` | choose a folder | the path in `it` |
+| `answer color [with "default"]` | color picker | the color in `it` |
+| `answer effect` | choose a visual effect | the effect in `it` |
+| `answer record` | sound-recording settings | settings stored by the host |
+
+Cancelling puts empty in `it` and `Cancel` in `the result`. Open: the exact syntax of each form (types, multiple files, defaults), how paths are written on each platform, and whether these move into the standard library once syntax declarations exist (5.9). Paths returned by a dialog should count as permission to touch that file (5.13).
+
+### 5.17 Our own stack file format (design in progress)
+
+- One in-memory **stack document** model (a new crate) that every format converts to and from: our text form, our binary form, OXT REVO, later HyperCard. File access goes through the `Host`.
+- **Text form**: a valid HTML5 document. Parts are custom elements with an `xt-` prefix (`<xt-stack>`, `<xt-card>`, `<xt-button>`, `<xt-audioclip>`); scripts are `<script type="text/x-xtalk">`; binary resources are base64 data URLs wrapped at 76 columns; custom properties keep their types (so OXT typed values round-trip); field text is HTML paragraphs and spans. Output is deterministic (fixed attribute order, only non-default properties, LF endings) so diffs are small. An optional, never-changing preview script lays parts out from `rect` in a browser.
+- **Binary form**: the same model, little-endian, length-prefixed records a reader can skip, raw blobs, optional bytecode cache section (5.11). Text and binary must round-trip into each other.
+- **Foreign records**: parts we do not model (EPS, palettes, players for now, widgets whose extension is missing) are listed in the loss report; whether their raw bytes are also preserved for a lossless OXT round trip is open.
+- **Model gap**: OXT lets a card show several shared groups; ours gives each card one background. Proposed: allow several shared groups per card, with `background` as the HyperCard case.
+- **File extensions (Decided):** `.xtstack` is the binary form; `.xtstack.html` is the text form, which a browser opens with a double-click and which can carry the engine (5.18).
+
+### 5.18 Stacks that run in a browser (direction decided, not built)
+
+A `.xtstack.html` file should work as a self-contained, offline, interactive web page.
+
+- **Engine:** the core compiled to WebAssembly (not asm.js, which is obsolete). Needs the `no_std` core (B3) with shell, threads, and `std::time` left out.
+- **Why it fits:** the VM never blocks. `Status::Sleeping` becomes a `setTimeout` that resumes `run`, so `wait` does not freeze the page.
+- **`xt-wasm` crate:** a few exported functions (load a stack, send a message, run until paused, get and set properties) plus a small hand-written JS glue file. Avoid `wasm-bindgen` unless the API grows.
+- **Browser host (JS):** `put` writes to a message box element; `answer` and `ask` are in-page dialogs, which needs a "waiting for the person" run status (open question 10); `answer file` uses a file input, `ask file` a download; shell is always denied; `the platform` is `HTML5`.
+- **HTML5 backend:** `xt-` custom elements become live widgets; DOM events become messages (`mouseUp`), and property changes update the elements. This is a toolkit backend (roadmap D) aimed at the DOM.
+- **Runtime placement, chosen when saving:** *embedded* (the WASM as base64 in the file; works offline from one file; adds the runtime's size to every stack; identical bytes every save, so no diff churn) or *linked* (`<script src="xt-runtime.js">` beside the stack; tiny). Proposed default: linked; `with runtime` embeds. The embedded runtime carries a version so a newer engine can offer to update it. Script source stays the truth; the page compiles scripts when it loads (5.11).
+- **Order:** `no_std` core, WASM build in CI, `xt-wasm` and the browser host, the text stack format (5.17), then the HTML5 backend.
+- **Toolchain note:** the maintainer's Rust is Homebrew's and has no `wasm32` target. rustup is the usual fix, and the Wii target (5.15) needs rustup's nightly anyway.
 
 ---
 
@@ -466,7 +507,7 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 17. **Syntax extension:** the pattern language and scope rules for declaring grammar in xTalk (5.9).
 18. **Part definitions:** the exact `part` syntax for property schemas, observers, presentation roles, and capability flags (5.10, section 11).
 19. **Bytecode cache:** file format, key, and location (5.11).
-20. **Stack formats:** the capability matrix and loss report design, after the PDF arrives (5.12).
+20. **Stack formats:** the capability matrix and loss report design (5.12); our own text and binary formats (5.17).
 21. **Dialect profiles:** how HyperTalk, OpenXION, WebTalk, SuperCard, MediaTalk, and Lingo are packaged (5.12).
 22. **Resource objects:** ownership and storage of clips in stack files; whether `file` and `url` access blocks or runs in the background; their permission model (5.13).
 23. **Platform and processor values:** exact value sets, how the BSDs, Wii, vWii, and non-HTML5 WebAssembly report, and whether to add `the byteOrder` (5.14).
@@ -533,7 +574,7 @@ Do these in order. Each ends with `cargo test` green and the spec updated.
 
 **F. Platform**: stack files (zip container plus unpacked text form), substacks, extension manifest and C ABI, `libloading` and `libffi` externals, `do ... as` for JavaScript/Lua/AppleScript, the fused-executable packager, WASM and iOS static registration, legacy import (Mac file and resource readers, HyperCard stack importer with WOBA, optional 68K XCMD emulation).
 
-**G. Interoperability and stack formats**: obtain the OpenXTalk stack format PDF; design the capability matrix and loss report; write importers and exporters for the OpenXTalk and LiveCode formats first, then HyperCard (including the legacy import work in F) and the other dialects in the priority order of 5.12; package each dialect as a profile.
+**G. Interoperability and stack formats**: (PDF received) design the capability matrix and loss report; write importers and exporters for the OpenXTalk and LiveCode formats first, then HyperCard (including the legacy import work in F) and the other dialects in the priority order of 5.12; package each dialect as a profile.
 
 **H. Console targets (Wii, then Wii U)**: after B3. Confirm the toolchain recipe (nightly, `-Zbuild-std`, custom target, devkitPPC, `elf2dol`); get `Hello World` running as a `.dol` in an emulator; build the console backend (drawn widgets, controller input); add the Homebrew Channel metadata; add a CI job. Then decide whether the Wii U needs its own native build.
 
