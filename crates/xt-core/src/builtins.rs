@@ -4,8 +4,6 @@
 //! A user-defined function with the same name takes precedence, so the VM
 //! only comes here when no handler of that name exists.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use crate::error::XtError;
 use crate::interp::{format_number, to_number};
 
@@ -17,6 +15,8 @@ pub struct CallContext<'a> {
     pub args: &'a [String],
     /// A random number for `random`.
     pub rand: u64,
+    /// The time now, since 1970, from the host (`Host::now`).
+    pub now: std::time::Duration,
 }
 
 const NAMES: &[&str] = &[
@@ -86,12 +86,6 @@ fn one_number(name: &str, args: &[String]) -> Result<f64, XtError> {
 fn two_numbers(name: &str, args: &[String]) -> Result<(f64, f64), XtError> {
     arity(name, args, 2, 2)?;
     Ok((to_number(&args[0])?, to_number(&args[1])?))
-}
-
-fn since_epoch() -> std::time::Duration {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
 }
 
 /// Call a built-in function. The caller has checked `is_builtin`.
@@ -198,15 +192,15 @@ pub fn call(name: &str, args: &[String], ctx: &CallContext) -> Result<String, Xt
         }
         "seconds" => {
             arity(name, args, 0, 0)?;
-            Ok(since_epoch().as_secs().to_string())
+            Ok(ctx.now.as_secs().to_string())
         }
         "ticks" => {
             arity(name, args, 0, 0)?;
-            Ok(((since_epoch().as_secs_f64() * 60.0) as u64).to_string())
+            Ok(((ctx.now.as_secs_f64() * 60.0) as u64).to_string())
         }
         "milliseconds" => {
             arity(name, args, 0, 0)?;
-            Ok(since_epoch().as_millis().to_string())
+            Ok(ctx.now.as_millis().to_string())
         }
         "param" => {
             let n = one_number(name, args)?.trunc() as i64;

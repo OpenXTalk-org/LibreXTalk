@@ -6,3 +6,14 @@ members = ["crates/*"]
 version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+
+# A release build tuned for size, for the WebAssembly engine that web pages
+# download (CLAUDE.md 5.18):
+#   cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

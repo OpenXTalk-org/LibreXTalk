@@ -182,13 +182,13 @@ allow = [
     "utf8parse@0.2.2",
     "windows-link@0.2.1",
     "windows-sys@0.61.2",
-    "xt-cli@0.0.1",
-    "xt-core@0.0.1",
 ]
 # If true, workspace members are automatically allowed even when using deny-by-default
 # This is useful for organizations that want to deny all external dependencies by default
 # but allow their own workspace crates without having to explicitly list them
-allow-workspace = false
+# libreXTalk: our own crates (xt-core, xt-cli, xt-stackfile, xt-wasm, and
+# those to come) are always allowed; every third-party crate stays listed.
+allow-workspace = true
 # List of crates to deny
 deny = [
     #"ansi_term@0.11.0",

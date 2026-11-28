@@ -1,0 +1,5 @@
+# `cargo test --target wasm32-wasip1` runs each test program in Node.js
+# (CLAUDE.md 5.18). A program path with a slash is relative to this
+# project's root, so it works from every crate. Needs Node.js on the PATH.
+[target.wasm32-wasip1]
+runner = "tools/wasi-run.mjs"

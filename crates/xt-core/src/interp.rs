@@ -51,6 +51,14 @@ pub trait Host {
         Pending::Ready(Some(default.to_string()))
     }
 
+    /// The time now, as the time since 1970 (HST-4). The engine asks the
+    /// host instead of the operating system, because not every platform has
+    /// a clock the engine can read: WebAssembly in a browser gets the time
+    /// from the page. The default reads the system clock where there is one.
+    fn now(&mut self) -> Duration {
+        system_now()
+    }
+
     /// Show one of the dialog forms of `answer` and `ask`, such as a file
     /// chooser (DLG-1). `None` means the person cancelled. One method serves
     /// every form, so adding a form does not add a method to every host: a
@@ -281,7 +289,8 @@ impl Interpreter {
             frames: Vec::new(),
             result: String::new(),
             item_delimiter: ",".to_string(),
-            rng: seed(),
+            // Seeded from the host's clock on the first `run`.
+            rng: 0,
             waiting: None,
             reply: None,
         }
@@ -310,6 +319,9 @@ impl Interpreter {
 
     /// Run until the script finishes or waits.
     pub fn run(&mut self, host: &mut dyn Host) -> Result<Status, XtError> {
+        if self.rng == 0 {
+            self.rng = seed(host.now());
+        }
         let outcome = self.run_inner(host);
         if outcome.is_err() {
             self.abort();
@@ -970,6 +982,7 @@ impl Interpreter {
                         handler_name: &handler_name,
                         args: &handler_args,
                         rand,
+                        now: host.now(),
                     };
                     let value = builtins::call(name, &args, &ctx)?;
                     self.push(value);
@@ -1659,13 +1672,30 @@ fn to_index(s: &str) -> Result<i64, XtError> {
     Ok(to_number(s)?.trunc() as i64)
 }
 
-/// A nonzero starting value for the random number generator.
-fn seed() -> u64 {
-    let nanos = std::time::SystemTime::now()
+/// A nonzero starting value for the random number generator, from a time.
+fn seed(now: Duration) -> u64 {
+    let nanos = now.as_nanos() as u64;
+    if nanos == 0 {
+        0x2545_F491_4F6C_DD1D
+    } else {
+        nanos | 1
+    }
+}
+
+/// The system clock, where the platform has one the engine can read.
+/// WebAssembly without an operating system (`wasm32-unknown-unknown`) has
+/// none, and reading it there would stop the engine, so it reports zero;
+/// a host on that platform supplies the time itself.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn system_now() -> Duration {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x2545_F491_4F6C_DD1D);
-    nanos | 1
+        .unwrap_or_default()
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn system_now() -> Duration {
+    Duration::ZERO
 }
 
 fn to_bool(s: &str) -> Result<bool, XtError> {

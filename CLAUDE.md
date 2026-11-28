@@ -204,6 +204,8 @@ crates/xt-core/           the engine library, no third-party dependencies
   src/error.rs            XtError { message, line, col, incomplete }
   src/tests.rs            whole-script tests using a recording Capture host
 crates/xt-stackfile/      stack file formats: PartNode tree <-> .xtstack.html (binary .xtstack planned)
+crates/xt-wasm/           the engine as a WebAssembly module (JSON interface, no imports) + js/xt.mjs glue and js/test.mjs
+tools/wasi-run.mjs        runs wasm32-wasip1 test programs in Node.js (the runner in .cargo/config.toml)
 crates/xt-cli/            the `xt` program (rustyline REPL, `xt run file.xt`)
 examples/                 hello, countdown, fizzbuzz, chunks, functions, sysinfo, objects (.xt)
 ```
@@ -241,6 +243,7 @@ Assumed naming (maintainer has not objected): crates `librextalk-*`, binary `xt`
 ```rust
 pub trait Host {
     fn message(&mut self, text: &str);                              // required: put with no target
+    fn now(&mut self) -> Duration { /* the system clock; zero where there is none */ }
     fn sleep(&mut self, d: Duration) { thread::sleep(d) }           // default sleeps
     fn answer(&mut self, prompt: &str, buttons: &[String]) -> Pending<usize> { Pending::Ready(0) }
     fn ask(&mut self, prompt: &str, default: &str) -> Pending<Option<String>> { Pending::Ready(Some(default.to_string())) }
@@ -417,7 +420,9 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
   - Shell access: never available. `the platform` is `HTML5`.
   - The engine's permission layer maps onto browser permissions instead of replacing them.
 - **Testing in browsers:** the engine's conformance tests also run as WebAssembly (in Node.js for speed), and end-to-end page tests run in headless Chromium, Firefox, and WebKit (for example with Playwright, Apache-2.0, as a dev tool outside the Rust crates). CI runs both.
-- **Order (revised):** the "waiting for the host" run status (done, 5.5); `xt-wasm` with its JS glue, running the engine tests as WebAssembly; the browser host (message box, dialogs, stack storage); the HTML5 backend (DOM, then canvas for drawn parts); browser tests in CI; then embedding the runtime in `.xtstack.html`. The `no_std` core (B3) is still needed for the Wii, but not for the browser, because `wasm32-unknown-unknown` has a usable `std` (the core already builds for it).
+- **Built (2026-11-28): `xt-wasm`.** The engine compiles to a WebAssembly module (`cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown`, about 407 KB, 155 KB compressed) that imports nothing and uses no `unsafe`. JS writes text into a buffer the engine hands out (`xt_input`), calls an export (`xt_load`, `xt_run(now_ms)`, `xt_reply_button`, `xt_reply_text`, `xt_reply_cancel`, `xt_reply_saved`, `xt_reply_opened`, `xt_reply_failed`), and reads a JSON answer (`xt_output_ptr`, `xt_output_len`) with a `status` (`loaded`, `finished`, `sleeping` with `ms`, `waiting` with a `request`, `replied`, `error` with `message` and `line`) and the `messages` that `put` showed. The web host answers every dialog and file call `Later` with a request (`answer`, `ask`, `dialog`, `save` with the `.xtstack.html` text, `open`). `crates/xt-wasm/js/xt.mjs` wraps this as `XtEngine` with an async `runScript(source, handlers)` for browsers and Node.js. Tests: Rust tests of the same logic, `node --test crates/xt-wasm/js/test.mjs` against the real module, and the core, stack-file, and web-engine suites run as WebAssembly with `cargo test --target wasm32-wasip1` (Node.js via `tools/wasi-run.mjs`). CI runs all three in a `wasm` job.
+- **The clock comes from the host (HST-4):** WebAssembly without an operating system has no clock, and reading it there stopped the engine. `Host::now` supplies the time for `the seconds`, `the ticks`, `the milliseconds`, and the random seed; the default reads the system clock, and the web host uses the page's `Date.now()` passed to `xt_run`. This also helps the `no_std` core (5.15).
+- **Order (revised):** the "waiting for the host" run status (done, 5.5); `xt-wasm` (done) with its JS glue, running the engine tests as WebAssembly; the browser host (message box, dialogs, stack storage); the HTML5 backend (DOM, then canvas for drawn parts); browser tests in CI; then embedding the runtime in `.xtstack.html`. The `no_std` core (B3) is still needed for the Wii, but not for the browser, because `wasm32-unknown-unknown` has a usable `std` (the core already builds for it).
 - **Toolchain:** the maintainer uses rustup's stable toolchain (`~/.cargo/bin`, put ahead of Homebrew on PATH in `~/.zprofile`; Homebrew's `rust` stays installed because another formula needs it to build). The `wasm32-unknown-unknown` target is installed, and `cargo build -p xt-core --target wasm32-unknown-unknown` succeeds (2026-11-27). The Wii target (5.15) will need rustup's nightly plus `rust-src`.
 
 ---
@@ -686,6 +691,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo run -p xt-cli                 # the prompt
 cargo run -p xt-cli -- run examples/chunks.xt
 cargo run -p xt-cli -- run --allow-shell examples/sysinfo.xt
+
+# WebAssembly (needs rustup targets wasm32-unknown-unknown and wasm32-wasip1, and Node.js)
+cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown
+node --test crates/xt-wasm/js/test.mjs
+cargo test -p xt-core -p xt-stackfile -p xt-wasm --target wasm32-wasip1
 ```
 
 - Tests are whole-script tests in `crates/xt-core/src/tests.rs`, using a `Capture` host that records messages, sleeps, prompts, and scripted answers. Wait tests do not really sleep. A `Silent` host checks the default-deny shell rule. Add a test for every rule.
