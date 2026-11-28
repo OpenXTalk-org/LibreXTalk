@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use crate::{DialogRequest, Host, Interpreter, XtError};
+use std::collections::HashMap;
+
+use crate::{DialogRequest, Host, Interpreter, PartNode, XtError};
 
 #[derive(Default)]
 struct Capture {
@@ -19,6 +21,8 @@ struct Capture {
     /// Replies for dialog forms, used in order. Empty means the headless
     /// default: accept the suggested value, or cancel if there is none.
     choices: Vec<Option<String>>,
+    /// Stacks saved by `save stack`, by file name: an in-memory disk.
+    files: HashMap<String, PartNode>,
 }
 
 impl Host for Capture {
@@ -60,6 +64,18 @@ impl Host for Capture {
             return self.choices.remove(0);
         }
         (!request.default.is_empty()).then(|| request.default.to_string())
+    }
+
+    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> {
+        self.files.insert(path.to_string(), stack.clone());
+        Ok(())
+    }
+
+    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> {
+        self.files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| XtError::new(format!("No such file: {path}")))
     }
 
     // Record waits instead of really sleeping, so tests stay fast.
@@ -1761,4 +1777,241 @@ put it
     assert!(host.dialogs.is_empty());
     assert_eq!(host.prompts, vec!["a.txt!|OK", "blue sky|OK"]);
     assert_eq!(host.out, vec!["OK", "OK"]);
+}
+
+// ----- saving and opening stacks (SFM-1 to SFM-6) ----------------------------
+
+/// Run `first` in one engine, then `second` in a new engine that sees the
+/// files the first one saved, as if the program had been started again.
+fn run_twice(first: &str, second: &str) -> Capture {
+    let mut host = Capture::default();
+    Interpreter::new()
+        .run_source(first, &mut host)
+        .expect("first script should run");
+    host.out.clear();
+    Interpreter::new()
+        .run_source(second, &mut host)
+        .expect("second script should run");
+    host
+}
+
+const BUILD_DEMO: &str = r#"
+create stack "Demo"
+set the script of this stack to "on hello; put stackGreeting; end hello"
+create button "OK"
+set the rect of button "OK" to "10,10,90,34"
+set the script of button "OK" to "on mouseUp; hello; end mouseUp"
+create field "Notes"
+put "line one" & return & "line two" into field "Notes"
+set the shoeSize of button "OK" to 42
+create card "Second"
+create audioClip "beep"
+save this stack as "demo.xtstack.html"
+"#;
+
+#[test]
+fn a_saved_stack_opens_again_with_its_parts_and_scripts() {
+    let host = run_twice(
+        BUILD_DEMO,
+        r#"
+open stack "demo.xtstack.html"
+put the name of this stack
+put the number of cards
+put the name of card 2
+put the rect of button "OK" of card 1
+put line 2 of field "Notes" of card 1
+put the shoeSize of button "OK" of card 1
+put the number of audioClips
+send mouseUp to button "OK" of card 1
+put the filename of this stack
+"#,
+    );
+    assert_eq!(
+        host.out,
+        vec![
+            "Demo",
+            "2",
+            "Second",
+            "10,10,90,34",
+            "line two",
+            "42",
+            "1",
+            "stackGreeting",
+            "demo.xtstack.html"
+        ]
+    );
+}
+
+#[test]
+fn a_saved_tree_holds_only_what_differs_from_the_defaults() {
+    let mut host = Capture::default();
+    Interpreter::new()
+        .run_source(
+            "create button \"OK\"\nset the hilite of button 1 to true\nsave this stack as \"a\"",
+            &mut host,
+        )
+        .expect("script should run");
+    let stack = &host.files["a"];
+    assert_eq!(stack.kind, "stack");
+    assert_eq!(
+        stack.props,
+        vec![("name".to_string(), "Untitled".to_string())]
+    );
+    let card = &stack.children[1];
+    assert_eq!(card.kind, "card");
+    assert_eq!(card.background, Some(stack.children[0].id));
+    let button = &card.children[0];
+    assert_eq!(
+        button.props,
+        vec![
+            ("hilite".to_string(), "true".to_string()),
+            ("name".to_string(), "OK".to_string())
+        ]
+    );
+}
+
+#[test]
+fn saving_again_uses_the_same_file() {
+    let host = run_twice(
+        r#"
+save this stack as "a.xtstack.html"
+create button "Later"
+save this stack
+"#,
+        r#"
+open stack "a.xtstack.html"
+put the number of buttons
+"#,
+    );
+    assert_eq!(host.out, vec!["1"]);
+}
+
+#[test]
+fn saving_needs_a_file_name_the_first_time() {
+    assert!(run_err("save this stack")
+        .message
+        .contains("This stack has no file yet"));
+    assert!(run_err("save stack \"Untitled\" as \"\"")
+        .message
+        .contains("empty"));
+}
+
+#[test]
+fn clashing_ids_get_fresh_ones() {
+    // The default stack in every new engine has ids 1 to 3, so opening a
+    // saved copy of it in a new engine clashes, and it gets new ids.
+    let host = run_twice(
+        r#"
+create button "OK"
+save this stack as "u"
+"#,
+        r#"
+open stack "u"
+put the number of stacks
+put the id of button "OK" > 4
+send mouseUp to button "OK"
+"#,
+    );
+    assert_eq!(host.out, vec!["2", "true"]);
+}
+
+#[test]
+fn ids_are_kept_when_they_are_free() {
+    let host = run_twice(
+        BUILD_DEMO,
+        r#"
+open stack "demo.xtstack.html"
+put the id of button "OK" of card 1
+"#,
+    );
+    // Stack 4, background 5, card 6, button 7, as in the first engine.
+    assert_eq!(host.out, vec!["7"]);
+}
+
+#[test]
+fn opening_a_file_twice_does_not_load_it_twice() {
+    let host = run_twice(
+        BUILD_DEMO,
+        r#"
+open stack "demo.xtstack.html"
+open stack "demo.xtstack.html"
+put the number of stacks
+"#,
+    );
+    assert_eq!(host.out, vec!["2"]);
+}
+
+#[test]
+fn opening_a_stack_sends_open_card() {
+    let host = run_twice(
+        r#"
+create stack "Greeter"
+set the script of this stack to "on openCard; put welcome; end openCard"
+save this stack as "g"
+"#,
+        "open stack \"g\"",
+    );
+    assert_eq!(host.out, vec!["welcome"]);
+}
+
+#[test]
+fn a_broken_stack_is_not_opened_at_all() {
+    let mut host = Capture::default();
+    let mut tree = PartNode {
+        kind: "stack".to_string(),
+        id: 10,
+        ..PartNode::default()
+    };
+    tree.children.push(PartNode {
+        kind: "card".to_string(),
+        id: 11,
+        background: Some(99),
+        ..PartNode::default()
+    });
+    host.files.insert("bad".to_string(), tree.clone());
+    let mut interp = Interpreter::new();
+    let err = interp
+        .run_source("open stack \"bad\"", &mut host)
+        .expect_err("should fail");
+    assert!(err.message.contains("background id 99"));
+
+    // A script with an error also stops the whole stack from opening.
+    tree.children[0].background = None;
+    tree.children[0].script = "on mouseUp\nput (\nend mouseUp".to_string();
+    host.files.insert("bad".to_string(), tree);
+    let err = interp
+        .run_source("open stack \"bad\"", &mut host)
+        .expect_err("should fail");
+    assert!(err.message.contains("In the script of card"));
+    interp
+        .run_source("put the number of stacks", &mut host)
+        .expect("should run");
+    assert_eq!(host.out.last().map(String::as_str), Some("1"));
+}
+
+#[test]
+fn a_host_without_files_says_so() {
+    struct NoFiles;
+    impl Host for NoFiles {
+        fn message(&mut self, _text: &str) {}
+    }
+    let err = Interpreter::new()
+        .run_source("save this stack as \"x\"", &mut NoFiles)
+        .expect_err("should fail");
+    assert!(err.message.contains("can't save stacks"));
+}
+
+#[test]
+fn save_and_open_are_still_handler_names() {
+    let script = r#"
+on save
+  put "saving"
+end save
+on open what
+  put "opening" && what
+end open
+save
+open "door"
+"#;
+    assert_eq!(run(script), vec!["saving", "opening door"]);
 }

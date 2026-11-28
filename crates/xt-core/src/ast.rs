@@ -298,6 +298,13 @@ pub enum StmtKind {
         default: Option<Expr>,
         types: Vec<Expr>,
     },
+    /// `save stack "Demo" [as "demo.xtstack.html"]` (SFM-4)
+    SaveStack {
+        target: ObjSpec,
+        path: Option<Expr>,
+    },
+    /// `open stack "demo.xtstack.html"` (SFM-5)
+    OpenStack(Expr),
     /// `get <expr>` stores the value in `it`.
     Get(Expr),
     /// A bare expression typed at the prompt: evaluate it and show the result.

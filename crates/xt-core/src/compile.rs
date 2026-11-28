@@ -147,6 +147,14 @@ pub enum Op {
         has_default: bool,
         types: usize,
     },
+    /// Pop a file path (if there is one) and a stack reference, and ask the
+    /// host to save the stack.
+    SaveStack {
+        has_path: bool,
+    },
+    /// Pop a file path, ask the host to read the stack in it (unless it is
+    /// open already), and push a reference to the stack.
+    OpenStack,
 }
 
 /// How an object is picked, and so which operands it takes from the stack.
@@ -402,6 +410,23 @@ impl Compiler {
             StmtKind::DeleteObj(spec) => {
                 self.obj_spec(spec);
                 self.emit(Op::DeleteObj);
+            }
+            StmtKind::SaveStack { target, path } => {
+                self.obj_spec(target);
+                if let Some(p) = path {
+                    self.expr(p);
+                }
+                self.emit(Op::SaveStack {
+                    has_path: path.is_some(),
+                });
+            }
+            StmtKind::OpenStack(path) => {
+                // Opening a stack goes to it, like `go stack`.
+                self.expr(path);
+                self.emit(Op::OpenStack);
+                self.emit(Op::GoTo);
+                self.emit(Op::SendSystem("closeCard".to_string()));
+                self.emit(Op::SendSystem("openCard".to_string()));
             }
             StmtKind::Go(spec) => {
                 self.obj_spec(spec);

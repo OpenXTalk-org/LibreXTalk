@@ -48,6 +48,10 @@ pub struct World {
     pub stacks: Vec<ObjId>,
     pub current_stack: Option<ObjId>,
     pub current_card: Option<ObjId>,
+    /// The file each stack was opened from or last saved to. This is kept
+    /// out of the stack's properties so it is never written into the file
+    /// itself, and moving a file does not change its contents (SFM-6).
+    pub files: HashMap<ObjId, String>,
 }
 
 // ----- kinds and prototypes -------------------------------------------------
@@ -314,6 +318,40 @@ fn changed_rect(key: &str, [l, t, r, b]: [f64; 4], value: &str) -> Result<[f64; 
     }
 }
 
+// ----- stacks as plain trees ------------------------------------------------
+
+/// One object of a stack, with everything a stack file needs to keep, as
+/// plain data (SFM-1). This is the bridge between the object model and the
+/// stack file formats: the engine turns a stack into a tree when saving and
+/// a tree into a stack when opening, and each file format reads and writes
+/// trees. The engine never sees file bytes, and the formats never see the
+/// engine's arena.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PartNode {
+    /// The kind's name, as scripts write it: `stack`, `button`, `audioClip`.
+    pub kind: String,
+    pub id: i64,
+    /// Properties that differ from the kind's defaults, sorted by name, with
+    /// lowercase names. The name is here when it is not empty. The script is
+    /// kept apart, and computed properties (`width`, `number`) are left out.
+    pub props: Vec<(String, String)>,
+    pub script: String,
+    /// For a card: the id of the background it uses.
+    pub background: Option<i64>,
+    pub children: Vec<PartNode>,
+}
+
+/// Can an object of kind `child` live directly inside one of kind `parent`?
+fn may_contain(parent: ObjKind, child: ObjKind) -> bool {
+    match parent {
+        ObjKind::Stack => {
+            matches!(child, ObjKind::Background | ObjKind::Card) || is_resource(child)
+        }
+        ObjKind::Card | ObjKind::Background | ObjKind::Group => is_control(child),
+        _ => false,
+    }
+}
+
 fn gone() -> XtError {
     XtError::new("That object no longer exists")
 }
@@ -411,6 +449,7 @@ impl World {
             }
         }
         self.stacks.retain(|s| *s != id);
+        self.files.remove(&id);
         self.by_id.remove(&object_id);
         let slot = &mut self.slots[id.index];
         slot.obj = None;
@@ -518,6 +557,174 @@ impl World {
         self.children_of_kind(stack, ObjKind::Card).first().copied()
     }
 
+    // ----- stack trees -------------------------------------------------------
+
+    /// The stack (or any object) as a tree of plain data, for saving.
+    pub fn export(&self, id: ObjId) -> Result<PartNode, XtError> {
+        let obj = self.get(id).ok_or_else(gone)?;
+        let defaults = prototype_props(obj.kind);
+        let mut props: Vec<(String, String)> = obj
+            .props
+            .iter()
+            .filter(|(k, v)| {
+                if k.as_str() == "script" {
+                    return false;
+                }
+                let default = if k.as_str() == "name" {
+                    Some("")
+                } else {
+                    defaults
+                        .iter()
+                        .find(|d| d.name == k.as_str())
+                        .map(|d| d.default)
+                };
+                default != Some(v.as_str())
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        props.sort();
+        let background = obj.background.and_then(|b| self.get(b)).map(|b| b.id);
+        let mut children = Vec::with_capacity(obj.children.len());
+        for &child in &obj.children {
+            children.push(self.export(child)?);
+        }
+        Ok(PartNode {
+            kind: kind_name(obj.kind).to_string(),
+            id: obj.id,
+            props,
+            script: obj.props.get("script").cloned().unwrap_or_default(),
+            background,
+            children,
+        })
+    }
+
+    /// Build a stack from a tree, for opening (SFM-2). Returns the new stack
+    /// and every object that has a script, so the caller can compile them.
+    ///
+    /// Ids are kept when none of them is in use already. Ids are unique in
+    /// the whole engine for now, not per stack, so when any id clashes every
+    /// object of the opened stack gets a fresh id instead (SFM-3).
+    pub fn import_stack(
+        &mut self,
+        tree: &PartNode,
+    ) -> Result<(ObjId, Vec<(ObjId, String)>), XtError> {
+        if kind_of_word(&tree.kind) != Some((ObjKind::Stack, false)) {
+            return Err(XtError::new(format!(
+                "Expected a stack at the top of the file but found a {}",
+                tree.kind
+            )));
+        }
+        let mut ids = Vec::new();
+        collect_ids(tree, &mut ids);
+        let mut seen = std::collections::HashSet::new();
+        for &id in &ids {
+            if id < 1 || !seen.insert(id) {
+                return Err(XtError::new(format!(
+                    "The stack file uses the object id {id} more than once, or an id below 1"
+                )));
+            }
+        }
+        let keep_ids = ids.iter().all(|id| !self.by_id.contains_key(id));
+        let mut new_of_old = HashMap::new();
+        let mut scripts = Vec::new();
+        let stack = match self.import_node(tree, None, keep_ids, &mut new_of_old, &mut scripts) {
+            Ok(stack) => stack,
+            Err(e) => {
+                // Remove whatever was made before the problem was found.
+                if let Some(&root) = new_of_old.get(&tree.id) {
+                    self.delete(root);
+                }
+                return Err(e);
+            }
+        };
+        // Cards name their background by id, so link them once all exist.
+        let mut cards = Vec::new();
+        collect_cards(tree, &mut cards);
+        for (card_id, background) in cards {
+            let card = new_of_old[&card_id];
+            let link = match background {
+                Some(b) => match new_of_old.get(&b) {
+                    Some(&bg) if self.get(bg).is_some_and(|o| o.kind == ObjKind::Background) => {
+                        Some(bg)
+                    }
+                    _ => {
+                        self.delete(stack);
+                        return Err(XtError::new(format!(
+                            "Card id {card_id} uses background id {b}, which is not in the file"
+                        )));
+                    }
+                },
+                None => None,
+            };
+            if let Some(c) = self.get_mut(card) {
+                c.background = link;
+            }
+        }
+        if self.first_card(stack).is_none() {
+            self.delete(stack);
+            return Err(XtError::new("The stack in the file has no cards"));
+        }
+        self.stacks.push(stack);
+        Ok((stack, scripts))
+    }
+
+    fn import_node(
+        &mut self,
+        node: &PartNode,
+        parent: Option<ObjId>,
+        keep_ids: bool,
+        new_of_old: &mut HashMap<i64, ObjId>,
+        scripts: &mut Vec<(ObjId, String)>,
+    ) -> Result<ObjId, XtError> {
+        let kind = match kind_of_word(&node.kind) {
+            Some((kind, false)) => kind,
+            _ => {
+                return Err(XtError::new(format!(
+                    "Unknown kind of object: {}",
+                    node.kind
+                )))
+            }
+        };
+        if let Some(p) = parent.and_then(|p| self.get(p)) {
+            if !may_contain(p.kind, kind) {
+                let message = format!(
+                    "{} id {} can't hold a {} (id {})",
+                    kind_name(p.kind),
+                    p.id,
+                    node.kind,
+                    node.id
+                );
+                return Err(XtError::new(message));
+            }
+        }
+        let created = if keep_ids {
+            // `create` takes the next id, so set it up to give this one.
+            let saved = self.next_id;
+            self.next_id = node.id - 1;
+            let created = self.create(kind, "", parent);
+            self.next_id = saved.max(node.id);
+            created
+        } else {
+            self.create(kind, "", parent)
+        };
+        new_of_old.insert(node.id, created);
+        for (name, value) in &node.props {
+            if let Err(e) = self.set_prop(created, name, value) {
+                return Err(XtError::new(format!(
+                    "The {name} of {} id {} in the file is wrong: {}",
+                    node.kind, node.id, e.message
+                )));
+            }
+        }
+        if !node.script.is_empty() {
+            scripts.push((created, node.script.clone()));
+        }
+        for child in &node.children {
+            self.import_node(child, Some(created), keep_ids, new_of_old, scripts)?;
+        }
+        Ok(created)
+    }
+
     // ----- properties --------------------------------------------------------
 
     pub fn get_prop(&self, id: ObjId, name: &str) -> Result<String, XtError> {
@@ -526,6 +733,9 @@ impl World {
         match key.as_str() {
             "id" => return Ok(obj.id.to_string()),
             "number" => return Ok(self.number_of(id).to_string()),
+            "filename" if obj.kind == ObjKind::Stack => {
+                return Ok(self.files.get(&id).cloned().unwrap_or_default())
+            }
             "owner" => {
                 return Ok(obj
                     .parent
@@ -551,6 +761,10 @@ impl World {
             return Err(XtError::new(format!(
                 "The {key} of an object can't be changed"
             )));
+        }
+        if key == "filename" && kind == ObjKind::Stack {
+            self.files.insert(id, value.to_string());
+            return Ok(());
         }
         let rect_key = matches!(
             key.as_str(),
@@ -585,5 +799,21 @@ impl World {
             obj.props.insert(key, stored);
         }
         Ok(())
+    }
+}
+
+fn collect_ids(node: &PartNode, out: &mut Vec<i64>) {
+    out.push(node.id);
+    for child in &node.children {
+        collect_ids(child, out);
+    }
+}
+
+fn collect_cards(node: &PartNode, out: &mut Vec<(i64, Option<i64>)>) {
+    if node.kind.eq_ignore_ascii_case("card") {
+        out.push((node.id, node.background));
+    }
+    for child in &node.children {
+        collect_cards(child, out);
     }
 }
