@@ -41,14 +41,14 @@ pub trait Host {
 
     /// Show a dialog with buttons and return the index of the chosen one.
     /// The default picks the first button, which suits a headless host.
-    fn answer(&mut self, _prompt: &str, _buttons: &[String]) -> usize {
-        0
+    fn answer(&mut self, _prompt: &str, _buttons: &[String]) -> Pending<usize> {
+        Pending::Ready(0)
     }
 
     /// Ask for a line of text. `None` means the person cancelled.
     /// The default accepts the suggested text.
-    fn ask(&mut self, _prompt: &str, default: &str) -> Option<String> {
-        Some(default.to_string())
+    fn ask(&mut self, _prompt: &str, default: &str) -> Pending<Option<String>> {
+        Pending::Ready(Some(default.to_string()))
     }
 
     /// Show one of the dialog forms of `answer` and `ask`, such as a file
@@ -58,28 +58,28 @@ pub trait Host {
     ///
     /// The default suits a headless host: it accepts the suggested value if
     /// there is one and otherwise cancels, because it cannot ask anyone.
-    fn choose(&mut self, request: &DialogRequest) -> Option<String> {
+    fn choose(&mut self, request: &DialogRequest) -> Pending<Option<String>> {
         if request.default.is_empty() {
-            None
+            Pending::Ready(None)
         } else {
-            Some(request.default.to_string())
+            Pending::Ready(Some(request.default.to_string()))
         }
     }
 
     /// Write a stack to a file (SFM-4). The host picks the file format, for
     /// example from the file name's extension, and does the writing; the
     /// engine only hands over the stack as a tree. The default cannot save.
-    fn save_stack(&mut self, path: &str, _stack: &PartNode) -> Result<(), XtError> {
-        Err(XtError::new(format!(
+    fn save_stack(&mut self, path: &str, _stack: &PartNode) -> Pending<Result<(), XtError>> {
+        Pending::Ready(Err(XtError::new(format!(
             "This program can't save stacks to files (\"{path}\")"
-        )))
+        ))))
     }
 
     /// Read the stack in a file (SFM-5). The default cannot open files.
-    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> {
-        Err(XtError::new(format!(
+    fn open_stack(&mut self, path: &str) -> Pending<Result<PartNode, XtError>> {
+        Pending::Ready(Err(XtError::new(format!(
             "This program can't open stack files (\"{path}\")"
-        )))
+        ))))
     }
 
     /// May a script run this shell command? A script with shell access can
@@ -110,11 +110,76 @@ pub enum Status {
     Finished,
     /// The script is waiting. Call `run` again after this long.
     Sleeping(Duration),
+    /// The script is waiting for the host to finish something it said it
+    /// would answer later, such as a dialog (HST-2). Call
+    /// [`Interpreter::reply`] with the answer, then `run` again.
+    Waiting,
+}
+
+/// A host's answer: ready now, or later (HST-1). A host that must wait for a
+/// person or for something asynchronous, such as a browser API, answers
+/// `Later` and gives the real answer to [`Interpreter::reply`] when it has
+/// it. The script pauses meanwhile; nothing blocks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pending<T> {
+    Ready(T),
+    Later,
+}
+
+/// `value.into()` is `Pending::Ready(value)`.
+impl<T> From<T> for Pending<T> {
+    fn from(value: T) -> Self {
+        Pending::Ready(value)
+    }
+}
+
+/// The answer to a host call that was answered `Later` (HST-3). Each kind
+/// of call takes one kind of reply.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostReply {
+    /// For `answer`: the index of the chosen button.
+    Button(usize),
+    /// For `ask` and the dialog forms: the reply, or `None` if cancelled.
+    Text(Option<String>),
+    /// For `save stack`: whether the stack was saved.
+    Saved(Result<(), XtError>),
+    /// For `open stack`: the stack read from the file.
+    Opened(Result<PartNode, XtError>),
+}
+
+/// What the VM is waiting for, with what it needs to finish the job.
+enum Waiting {
+    Answer { labels: Vec<String> },
+    Text,
+    Save { stack: ObjId, path: String },
+    Open { path: String },
+}
+
+impl Waiting {
+    fn describe(&self) -> &'static str {
+        match self {
+            Waiting::Answer { .. } => "a button choice (HostReply::Button)",
+            Waiting::Text => "a text reply (HostReply::Text)",
+            Waiting::Save { .. } => "a save result (HostReply::Saved)",
+            Waiting::Open { .. } => "an opened stack (HostReply::Opened)",
+        }
+    }
+
+    fn accepts(&self, reply: &HostReply) -> bool {
+        matches!(
+            (self, reply),
+            (Waiting::Answer { .. }, HostReply::Button(_))
+                | (Waiting::Text, HostReply::Text(_))
+                | (Waiting::Save { .. }, HostReply::Saved(_))
+                | (Waiting::Open { .. }, HostReply::Opened(_))
+        )
+    }
 }
 
 enum Flow {
     Continue,
     Sleep(Duration),
+    Wait,
 }
 
 /// One running handler.
@@ -190,6 +255,9 @@ pub struct Interpreter {
     rng: u64,
     /// The stacks, cards, and controls.
     world: World,
+    /// A host call answered `Later`, and the reply once the host gives it.
+    waiting: Option<Waiting>,
+    reply: Option<HostReply>,
 }
 
 impl Default for Interpreter {
@@ -214,6 +282,8 @@ impl Interpreter {
             result: String::new(),
             item_delimiter: ",".to_string(),
             rng: seed(),
+            waiting: None,
+            reply: None,
         }
     }
 
@@ -248,13 +318,46 @@ impl Interpreter {
     }
 
     /// Run until the script finishes, asking the host to sleep during waits.
+    /// This suits a host that answers everything at once. A host that
+    /// answers `Later` must call `run` and `reply` itself instead.
     pub fn run_to_end(&mut self, host: &mut dyn Host) -> Result<(), XtError> {
         loop {
             match self.run(host)? {
                 Status::Finished => return Ok(()),
                 Status::Sleeping(duration) => host.sleep(duration),
+                Status::Waiting => {
+                    self.abort();
+                    return Err(XtError::new(
+                        "The host will answer later, but run_to_end can't wait for it; use run and reply",
+                    ));
+                }
             }
         }
+    }
+
+    /// Give the answer to a host call that was answered `Later` (HST-3).
+    /// Then call `run` to carry on. It is an error to reply when nothing is
+    /// waiting, to reply twice, or to give the wrong kind of reply.
+    pub fn reply(&mut self, reply: HostReply) -> Result<(), XtError> {
+        let Some(waiting) = &self.waiting else {
+            return Err(XtError::new("Nothing is waiting for a reply"));
+        };
+        if self.reply.is_some() {
+            return Err(XtError::new("A reply has already been given"));
+        }
+        if !waiting.accepts(&reply) {
+            return Err(XtError::new(format!(
+                "The script is waiting for {}",
+                waiting.describe()
+            )));
+        }
+        self.reply = Some(reply);
+        Ok(())
+    }
+
+    /// Is the script waiting for a reply from the host?
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.is_some() && self.reply.is_none()
     }
 
     /// Load and run source text from start to finish.
@@ -297,6 +400,7 @@ impl Interpreter {
             match self.step(op, host) {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Sleep(duration)) => return Ok(Status::Sleeping(duration)),
+                Ok(Flow::Wait) => return Ok(Status::Waiting),
                 Err(err) => {
                     if self.try_catch(&err) {
                         continue;
@@ -312,6 +416,11 @@ impl Interpreter {
     }
 
     fn step(&mut self, op: Op, host: &mut dyn Host) -> Result<Flow, XtError> {
+        // While a host call is outstanding, the op that made it is the one
+        // that comes back here each time `run` is called (HST-2).
+        if self.waiting.is_some() {
+            return self.resume_waiting();
+        }
         match op {
             Op::Push(s) => self.push(s),
             Op::Load(name) => {
@@ -432,9 +541,10 @@ impl Interpreter {
                 if labels.is_empty() {
                     labels.push("OK".to_string());
                 }
-                let choice = host.answer(&prompt, &labels).min(labels.len() - 1);
-                let picked = labels[choice].clone();
-                self.write_var("it", picked);
+                match host.answer(&prompt, &labels) {
+                    Pending::Ready(choice) => self.finish_answer(&labels, choice),
+                    Pending::Later => return Ok(self.wait_for(Waiting::Answer { labels })),
+                }
             }
             Op::Ask { has_default } => {
                 let default = if has_default {
@@ -444,14 +554,8 @@ impl Interpreter {
                 };
                 let prompt = self.pop()?;
                 match host.ask(&prompt, &default) {
-                    Some(reply) => {
-                        self.write_var("it", reply);
-                        self.result = String::new();
-                    }
-                    None => {
-                        self.write_var("it", String::new());
-                        self.result = "Cancel".to_string();
-                    }
+                    Pending::Ready(reply) => self.finish_text(reply),
+                    Pending::Later => return Ok(self.wait_for(Waiting::Text)),
                 }
             }
             Op::Dialog {
@@ -484,14 +588,8 @@ impl Interpreter {
                 // Like `ask`: the choice goes in `it`; a cancel leaves `it`
                 // empty and sets `the result` to Cancel (DLG-2).
                 match host.choose(&request) {
-                    Some(choice) => {
-                        self.write_var("it", choice);
-                        self.result = String::new();
-                    }
-                    None => {
-                        self.write_var("it", String::new());
-                        self.result = "Cancel".to_string();
-                    }
+                    Pending::Ready(choice) => self.finish_text(choice),
+                    Pending::Later => return Ok(self.wait_for(Waiting::Text)),
                 }
             }
             Op::SaveStack { has_path } => {
@@ -511,8 +609,10 @@ impl Interpreter {
                     })?,
                 };
                 let tree = self.world.export(id)?;
-                host.save_stack(&path, &tree)?;
-                self.world.files.insert(id, path);
+                match host.save_stack(&path, &tree) {
+                    Pending::Ready(done) => self.finish_save(id, path, done)?,
+                    Pending::Later => return Ok(self.wait_for(Waiting::Save { stack: id, path })),
+                }
             }
             Op::OpenStack => {
                 let path = self.pop()?;
@@ -523,17 +623,16 @@ impl Interpreter {
                     .iter()
                     .find(|(_, file)| **file == path)
                     .map(|(id, _)| *id);
-                let stack = match open {
-                    Some(id) => id,
-                    None => {
-                        let tree = host.open_stack(&path)?;
-                        let stack = self.add_stack(&tree)?;
-                        self.world.files.insert(stack, path);
-                        stack
+                match open {
+                    Some(id) => {
+                        let text = self.world.ref_string(id).unwrap_or_default();
+                        self.push(text);
                     }
-                };
-                let text = self.world.ref_string(stack).unwrap_or_default();
-                self.push(text);
+                    None => match host.open_stack(&path) {
+                        Pending::Ready(tree) => self.finish_open(path, tree)?,
+                        Pending::Later => return Ok(self.wait_for(Waiting::Open { path })),
+                    },
+                }
             }
             Op::DoShell { shell } => {
                 // The first time through, start the command. After that, keep
@@ -1269,7 +1368,86 @@ impl Interpreter {
         Ok((new_ref, old_ref))
     }
 
-    /// Compile a script and install its handlers on an object.
+    // ----- host calls that finish now or later (HST-1 to HST-3) -------------
+
+    /// Start waiting: stay on the current op so it comes back when `run` is
+    /// called again.
+    fn wait_for(&mut self, waiting: Waiting) -> Flow {
+        self.waiting = Some(waiting);
+        self.frame_mut().pc -= 1;
+        Flow::Wait
+    }
+
+    /// Back at the op that is waiting: finish it if the host has replied,
+    /// or keep waiting.
+    fn resume_waiting(&mut self) -> Result<Flow, XtError> {
+        let Some(reply) = self.reply.take() else {
+            self.frame_mut().pc -= 1;
+            return Ok(Flow::Wait);
+        };
+        let Some(waiting) = self.waiting.take() else {
+            return Ok(Flow::Continue);
+        };
+        match (waiting, reply) {
+            (Waiting::Answer { labels }, HostReply::Button(choice)) => {
+                self.finish_answer(&labels, choice)
+            }
+            (Waiting::Text, HostReply::Text(text)) => self.finish_text(text),
+            (Waiting::Save { stack, path }, HostReply::Saved(done)) => {
+                self.finish_save(stack, path, done)?
+            }
+            (Waiting::Open { path }, HostReply::Opened(tree)) => self.finish_open(path, tree)?,
+            // `reply` only accepts the matching kind.
+            _ => return Err(XtError::new("Internal error: the wrong kind of reply")),
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn finish_answer(&mut self, labels: &[String], choice: usize) {
+        let picked = labels[choice.min(labels.len() - 1)].clone();
+        self.write_var("it", picked);
+    }
+
+    /// `ask` and the dialog forms: the reply goes in `it`; a cancel leaves
+    /// `it` empty and sets `the result` to Cancel.
+    fn finish_text(&mut self, reply: Option<String>) {
+        match reply {
+            Some(text) => {
+                self.write_var("it", text);
+                self.result = String::new();
+            }
+            None => {
+                self.write_var("it", String::new());
+                self.result = "Cancel".to_string();
+            }
+        }
+    }
+
+    fn finish_save(
+        &mut self,
+        stack: ObjId,
+        path: String,
+        done: Result<(), XtError>,
+    ) -> Result<(), XtError> {
+        done?;
+        if self.world.get(stack).is_some() {
+            self.world.files.insert(stack, path);
+        }
+        Ok(())
+    }
+
+    fn finish_open(
+        &mut self,
+        path: String,
+        tree: Result<PartNode, XtError>,
+    ) -> Result<(), XtError> {
+        let stack = self.add_stack(&tree?)?;
+        self.world.files.insert(stack, path);
+        let text = self.world.ref_string(stack).unwrap_or_default();
+        self.push(text);
+        Ok(())
+    }
+
     /// A stack as a tree of plain data, for a host or a tool that saves
     /// stacks itself (SFM-1). `reference` is a stack reference such as
     /// `stack id 1`.
@@ -1306,6 +1484,7 @@ impl Interpreter {
         Ok(stack)
     }
 
+    /// Compile a script and install its handlers on an object.
     fn set_script(&mut self, id: ObjId, text: &str) -> Result<(), XtError> {
         let script = parse_script(text).map_err(|e| {
             let place = e
@@ -1380,6 +1559,8 @@ impl Interpreter {
 
     /// Stop everything, keeping the prompt's variables.
     fn abort(&mut self) {
+        self.waiting = None;
+        self.reply = None;
         let mut drained = self.frames.drain(..);
         if let Some(first) = drained.next() {
             if first.is_main {

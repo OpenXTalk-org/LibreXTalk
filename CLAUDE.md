@@ -228,7 +228,8 @@ Assumed naming (maintainer has not objected): crates `librextalk-*`, binary `xt`
 
 - Scripts compile to flat **bytecode** per handler. Expressions use a value stack. Control flow is jumps. Loop counters use hidden variables whose names start with `#`, which the lexer can never produce.
 - The VM keeps its **own stack of frames** (handler, program counter, locals, value stack, try entries, `me`, `target`, pending shell job). It does not use the Rust call stack, so a script can pause anywhere, even inside a function called from an expression, and resume later. Runaway recursion is a script error at depth 1000, not a crash.
-- `Interpreter::run` returns `Status::Finished` or `Status::Sleeping(duration)`. The host decides how to wait. `run_to_end` loops and calls `Host::sleep`. A GUI host should schedule a timer instead of blocking.
+- `Interpreter::run` returns `Status::Finished`, `Status::Sleeping(duration)`, or `Status::Waiting`. The host decides how to wait. `run_to_end` loops and calls `Host::sleep`. A GUI host should schedule a timer instead of blocking.
+- **Host calls can finish later (HST-1 to HST-3).** `answer`, `ask`, the dialog forms, `save stack`, and `open stack` call host methods that return `Pending<T>`: `Ready(value)` now, or `Later`. On `Later` the op stays current and `run` returns `Status::Waiting`; the host calls `Interpreter::reply(HostReply::...)` (`Button`, `Text`, `Saved`, `Opened`) when it has the answer, then `run` again. Running again without a reply keeps waiting without asking twice; a wrong or second reply is refused; an `Err` given as a reply is a runtime error that `try` can catch. Works anywhere, including inside a function called from an expression. `run_to_end` cannot wait, so it reports an error if a host answers `Later`. This is what browser hosts need (5.18).
 - `try`/`catch` unwinds across frames: the nearest open `try` anywhere on the frame stack catches a runtime error. `exit repeat` and `next repeat` close the try blocks opened inside their loop.
 - Variables of loose statements persist between loads in `main_locals`, so the prompt remembers them. A runtime error keeps them.
 - Errors carry line and column for syntax errors. Runtime errors carry a line only for handlers loaded from the source being run; handlers from object scripts carry none (their line numbers belong to the script text).
@@ -241,11 +242,11 @@ Assumed naming (maintainer has not objected): crates `librextalk-*`, binary `xt`
 pub trait Host {
     fn message(&mut self, text: &str);                              // required: put with no target
     fn sleep(&mut self, d: Duration) { thread::sleep(d) }           // default sleeps
-    fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize { 0 }
-    fn ask(&mut self, prompt: &str, default: &str) -> Option<String> { Some(default.to_string()) }
-    fn choose(&mut self, request: &DialogRequest) -> Option<String> { /* the default, or cancel */ }
-    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> { Err(..) }
-    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> { Err(..) }
+    fn answer(&mut self, prompt: &str, buttons: &[String]) -> Pending<usize> { Pending::Ready(0) }
+    fn ask(&mut self, prompt: &str, default: &str) -> Pending<Option<String>> { Pending::Ready(Some(default.to_string())) }
+    fn choose(&mut self, request: &DialogRequest) -> Pending<Option<String>> { /* the default, or cancel */ }
+    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Pending<Result<(), XtError>> { /* can't */ }
+    fn open_stack(&mut self, path: &str) -> Pending<Result<PartNode, XtError>> { /* can't */ }
     fn allow_shell(&mut self, shell: &str, script: &str) -> bool { false }  // deny by default
 }
 ```
@@ -416,7 +417,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
   - Shell access: never available. `the platform` is `HTML5`.
   - The engine's permission layer maps onto browser permissions instead of replacing them.
 - **Testing in browsers:** the engine's conformance tests also run as WebAssembly (in Node.js for speed), and end-to-end page tests run in headless Chromium, Firefox, and WebKit (for example with Playwright, Apache-2.0, as a dev tool outside the Rust crates). CI runs both.
-- **Order (revised):** the "waiting for the host" run status; `xt-wasm` with its JS glue, running the engine tests as WebAssembly; the browser host (message box, dialogs, stack storage); the HTML5 backend (DOM, then canvas for drawn parts); browser tests in CI; then embedding the runtime in `.xtstack.html`. The `no_std` core (B3) is still needed for the Wii, but not for the browser, because `wasm32-unknown-unknown` has a usable `std` (the core already builds for it).
+- **Order (revised):** the "waiting for the host" run status (done, 5.5); `xt-wasm` with its JS glue, running the engine tests as WebAssembly; the browser host (message box, dialogs, stack storage); the HTML5 backend (DOM, then canvas for drawn parts); browser tests in CI; then embedding the runtime in `.xtstack.html`. The `no_std` core (B3) is still needed for the Wii, but not for the browser, because `wasm32-unknown-unknown` has a usable `std` (the core already builds for it).
 - **Toolchain:** the maintainer uses rustup's stable toolchain (`~/.cargo/bin`, put ahead of Homebrew on PATH in `~/.zprofile`; Homebrew's `rust` stays installed because another formula needs it to build). The `wasm32-unknown-unknown` target is installed, and `cargo build -p xt-core --target wasm32-unknown-unknown` succeeds (2026-11-27). The Wii target (5.15) will need rustup's nightly plus `rust-src`.
 
 ---
@@ -530,7 +531,7 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 7. Whether argument styles may ever be mixed in one call.
 8. Alias policy for dialect profiles.
 9. Dates and times (`the date`, `the time`): time zones and formats.
-10. Asynchronous dialogs for GUI hosts (probably a new run status meaning "waiting for the person").
+10. ~~Asynchronous dialogs for GUI hosts.~~ **Done (2026-11-27):** `Pending`, `Status::Waiting`, and `Interpreter::reply` (5.5). Still open: whether `shell()` and future `url` access should also answer through this instead of polling.
 11. Strict-variables mode (unassigned variable is an error).
 12. Background shell commands that return at once and send a message; finer shell permissions than all-or-nothing.
 13. Standard library details: the exact set of native primitives, the `hostInfo` key names, manifest and documentation metadata, how "immutable" is enforced (proposal: library handlers are installed once, outside any object's script table, and `set the script` cannot reach them).
