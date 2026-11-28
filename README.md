@@ -2,6 +2,8 @@
 
 A small headless xTalk interpreter, with a command prompt.
 
+**Try it in a browser:** https://openxtalk-org.github.io/LibreXTalk/ (a test build of `main`; `librextalk.html` there is the same page as one file for offline use).
+
     cargo run -p xt-cli                       # the prompt
     cargo run -p xt-cli -- run examples/countdown.xt
     cargo test
