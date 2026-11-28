@@ -1278,16 +1278,19 @@ fn the_object_tree_can_be_listed() {
     let interp = Interpreter::new();
     let listing = interp.describe_objects();
     assert!(listing.contains("stack id 1 \"Untitled\" *"));
-    assert!(listing.contains("card id 3 \"\" *"));
+    assert!(listing.contains("card id 2 \"\" *"));
 }
 
 #[test]
 fn creating_and_reading_controls() {
-    assert_eq!(run("create button \"OK\"\nput it"), vec!["button id 4"]);
+    assert_eq!(
+        run("create button \"OK\"\nput it"),
+        vec!["button id 3 of stack id 1"]
+    );
     let script = "create button \"OK\"\nput the name of button 1\nput the number of buttons";
     assert_eq!(run(script), vec!["OK", "1"]);
     assert_eq!(
-        run("create button \"OK\"\nput the name of button id 4"),
+        run("create button \"OK\"\nput the name of button id 3"),
         vec!["OK"]
     );
 }
@@ -1512,7 +1515,7 @@ put control "Notes"
     // is a field, so its value is its text, as for any field reference.
     assert_eq!(
         run(script),
-        vec!["2", "2", "2", "Notes", "button id 4", "hello"]
+        vec!["2", "2", "2", "Notes", "button id 3 of stack id 1", "hello"]
     );
 }
 
@@ -1520,14 +1523,14 @@ put control "Notes"
 fn a_part_reference_by_id_finds_any_control() {
     let script = r#"
 create button "OK"
-put the name of part id 4
-put the name of button id 4
+put the name of part id 3
+put the name of button id 3
 "#;
     assert_eq!(run(script), vec!["OK", "OK"]);
     // A button id is not a field id, but it is a part id.
-    assert!(run_err("create button \"OK\"\nput the name of field id 4")
+    assert!(run_err("create button \"OK\"\nput the name of field id 3")
         .message
-        .contains("There is no field id 4"));
+        .contains("There is no field id 3"));
 }
 
 #[test]
@@ -1539,7 +1542,10 @@ put the rect of part "Spacer"
 set the width of part "Spacer" to 40
 put the rect of it
 "#;
-    assert_eq!(run(script), vec!["part id 4", "0,0,100,100", "0,0,40,100"]);
+    assert_eq!(
+        run(script),
+        vec!["part id 3 of stack id 1", "0,0,100,100", "0,0,40,100"]
+    );
 }
 
 #[test]
@@ -1558,8 +1564,8 @@ put the number of parts
     assert_eq!(
         run(script),
         vec![
-            "audioClip id 4",
-            "videoClip id 5",
+            "audioClip id 3 of stack id 1",
+            "videoClip id 4 of stack id 1",
             "1",
             "1",
             "100",
@@ -1918,9 +1924,10 @@ fn saving_needs_a_file_name_the_first_time() {
 }
 
 #[test]
-fn clashing_ids_get_fresh_ones() {
-    // The default stack in every new engine has ids 1 to 3, so opening a
-    // saved copy of it in a new engine clashes, and it gets new ids.
+fn only_a_clashing_stack_id_changes() {
+    // Every new engine starts with stack id 1, so a saved copy of the
+    // default stack clashes when opened in a new engine. The stack gets a
+    // new id; the objects in it keep theirs (SFM-3, OBJ-15).
     let host = run_twice(
         r#"
 create button "OK"
@@ -1929,11 +1936,12 @@ save this stack as "u"
         r#"
 open stack "u"
 put the number of stacks
-put the id of button "OK" > 4
-send mouseUp to button "OK"
+put the id of this stack
+put the id of button "OK"
+put the name of button id 3
 "#,
     );
-    assert_eq!(host.out, vec!["2", "true"]);
+    assert_eq!(host.out, vec!["2", "2", "3", "OK"]);
 }
 
 #[test]
@@ -1945,8 +1953,8 @@ open stack "demo.xtstack.html"
 put the id of button "OK" of card 1
 "#,
     );
-    // Stack 4, background 5, card 6, button 7, as in the first engine.
-    assert_eq!(host.out, vec!["7"]);
+    // Background 1, card 2, button 3, as in the first engine.
+    assert_eq!(host.out, vec!["3"]);
 }
 
 #[test]
@@ -2198,4 +2206,63 @@ fn run_to_end_cannot_wait_for_a_host() {
     host.later = false;
     interp.run_source("put 1", &mut host).unwrap();
     assert_eq!(host.out, vec!["1"]);
+}
+
+// ----- ids are numbered per stack (OBJ-15, OBJ-16) ---------------------------
+
+#[test]
+fn each_stack_numbers_its_own_objects() {
+    let script = r#"
+create button "First"
+put it into a
+create stack "Two"
+create button "Second"
+put it into b
+put a
+put b
+put the name of a
+put the name of b
+put the name of button id 3
+put the name of button id 3 of stack "Untitled"
+put the id of this stack
+"#;
+    assert_eq!(
+        run(script),
+        vec![
+            "button id 3 of stack id 1",
+            "button id 3 of stack id 2",
+            "First",
+            "Second",
+            "Second",
+            "First",
+            "2"
+        ]
+    );
+}
+
+#[test]
+fn a_short_reference_means_the_current_stack() {
+    let script = r#"
+create button "First"
+create stack "Two"
+create button "Second"
+put the name of "button id 3"
+go stack "Untitled"
+put the name of "button id 3"
+"#;
+    assert_eq!(run(script), vec!["Second", "First"]);
+}
+
+#[test]
+fn a_reference_to_a_deleted_stack_says_so() {
+    let script = r#"
+create stack "Two"
+create button "B"
+put it into b
+delete stack "Two"
+put the name of b
+"#;
+    assert!(run_err(script)
+        .message
+        .contains("button id 3 of stack id 2 no longer exists"));
 }

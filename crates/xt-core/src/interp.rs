@@ -18,7 +18,7 @@ use crate::builtins;
 use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, ObjShape, Op, SelShape};
 use crate::error::XtError;
-use crate::objects::{kind_matches, kind_name, ObjId, PartNode, World};
+use crate::objects::{kind_name, ObjId, PartNode, World};
 use crate::parser::parse_script;
 use crate::shell;
 
@@ -1117,14 +1117,18 @@ impl Interpreter {
     ) -> Result<ObjId, XtError> {
         if let (ObjShape::Id, Some(text)) = (shape, &operand) {
             let n = to_number(text)?.trunc() as i64;
+            // Ids are numbered per stack: look in the container's stack, as
+            // in `button id 3 of stack "Demo"`, or else the current stack.
+            let stack = match &container {
+                Some(c) => {
+                    let c = self.world.lookup_ref(c)?;
+                    self.world.stack_of(c)
+                }
+                None => self.world.current_stack,
+            };
             return self
                 .world
-                .by_numeric_id(n)
-                .filter(|id| {
-                    self.world
-                        .get(*id)
-                        .is_some_and(|o| kind_matches(kind, o.kind))
-                })
+                .find_by_id(kind, n, stack)
                 .ok_or_else(|| XtError::new(format!("There is no {} id {n}", kind_name(kind))));
         }
 
