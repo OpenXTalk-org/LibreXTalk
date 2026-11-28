@@ -205,9 +205,15 @@ $("file-input").addEventListener("change", async () => {
 });
 
 try {
-  const response = await fetch(WASM);
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  wasmBytes = await response.arrayBuffer();
+  if (typeof XT_WASM_BASE64 === "string") {
+    // The single-file build (tools/bundle.mjs) carries the engine inside the
+    // page, so it works when opened straight from a file, with no server.
+    wasmBytes = Uint8Array.from(atob(XT_WASM_BASE64), (c) => c.charCodeAt(0));
+  } else {
+    const response = await fetch(WASM);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    wasmBytes = await response.arrayBuffer();
+  }
   await newEngine();
   $("run").disabled = false;
   $("reset").disabled = false;

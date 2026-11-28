@@ -23,6 +23,7 @@ Inside the prompt, type `:help`. The up and down arrows recall earlier lines (ke
 - `crates/xt-stackfile`: stack files. It turns a stack (as a plain `PartNode` tree from the engine) into `.xtstack.html` text and back.
 - `crates/xt-wasm`: the engine as a WebAssembly module, with `js/xt.mjs` for web pages and Node.js. Build it with `cargo build -p xt-wasm --profile wasm-release --target wasm32-unknown-unknown` and test it with `node --test crates/xt-wasm/js/test.mjs`.
 - `web/`: the browser host page. Build the engine (above), run `node tools/serve.mjs`, and open http://127.0.0.1:8000/web/ to run scripts with real dialogs and save stacks in the browser.
+- `tools/bundle.mjs`: builds `target/web/librextalk.html`, the same page with the engine inside it, which opens straight from disk with no server.
 - `crates/xt-cli`: the `xt` program. It supplies a `Host` that prints to the terminal, asks for dialog replies, and reads and writes stack files.
 
 ## Why bytecode
