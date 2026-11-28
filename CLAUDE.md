@@ -25,6 +25,7 @@ These came after the first version of this file and change or extend it. Details
 13. **More `ask` and `answer` forms** are planned: `ask file`, `answer file`, `answer folder`, `answer color`, `answer effect`, `answer record`, and similar. Each is a host dialog, so each is a `Host` method with a headless default (5.16).
 14. **A stack file format of our own** is being designed: a version-control-friendly text form that is valid HTML (custom `xt-` elements, scripts in `<script type="text/x-xtalk">`, binary resources as wrapped base64 data URLs, so the file renders when opened in a browser), plus a compact binary sibling. The prompt needs `open stack` and `save stack` (5.17). Extensions: `.xtstack` (binary) and `.xtstack.html` (text).
 15. **A stack saved as `.xtstack.html` should run as an offline web page**, interactivity included, using a minimal build of the engine compiled to WebAssembly (5.18).
+16. **The browser is a main target and a main test platform** (2026-11-27): WebAssembly/JS/HTML5 builds serve both fused standalone apps and the future IDE. The HTML5 backend may use standard DOM elements and HTML5 APIs (canvas, and so on) for rendering and underlying implementation, working around sandboxing and permission limits as needed (5.18).
 
 ---
 
@@ -202,6 +203,7 @@ crates/xt-core/           the engine library, no third-party dependencies
   src/objects.rs          World arena, ObjId, kinds, prototypes, properties, rects
   src/error.rs            XtError { message, line, col, incomplete }
   src/tests.rs            whole-script tests using a recording Capture host
+crates/xt-stackfile/      stack file formats: PartNode tree <-> .xtstack.html (binary .xtstack planned)
 crates/xt-cli/            the `xt` program (rustyline REPL, `xt run file.xt`)
 examples/                 hello, countdown, fizzbuzz, chunks, functions, sysinfo, objects (.xt)
 ```
@@ -241,6 +243,9 @@ pub trait Host {
     fn sleep(&mut self, d: Duration) { thread::sleep(d) }           // default sleeps
     fn answer(&mut self, prompt: &str, buttons: &[String]) -> usize { 0 }
     fn ask(&mut self, prompt: &str, default: &str) -> Option<String> { Some(default.to_string()) }
+    fn choose(&mut self, request: &DialogRequest) -> Option<String> { /* the default, or cancel */ }
+    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> { Err(..) }
+    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> { Err(..) }
     fn allow_shell(&mut self, shell: &str, script: &str) -> bool { false }  // deny by default
 }
 ```
@@ -371,7 +376,17 @@ Cancelling puts empty in `it` and `Cancel` in `the result`. The words are not re
 
 Open: LiveCode's `with type`, choosing several files (`answer files`), the list of effect names and options, the exact recording command and property names, how paths are written on each platform, and whether these move into the standard library once syntax declarations exist (5.9). Paths returned by a dialog should count as permission to touch that file (5.13).
 
-### 5.17 Our own stack file format (design in progress)
+### 5.17 Our own stack file format (text form built; binary form planned)
+
+**Built (2026-11-27):** `save stack ... [as path]` and `open stack path` (SFM rules); the `xt-stackfile` crate with the `.xtstack.html` reader and writer (SFH rules); the `xt` program saves and opens real files. How it fits together: the engine turns a stack into a `PartNode` tree of plain data (kind, id, non-default properties sorted, script, background id, children) and back, and hands trees to `Host::save_stack` and `Host::open_stack`; the host picks the format from the extension and does the file work. So the core still has no I/O and no format code. Details that are now fixed in code and tests:
+
+- Ids are kept when opening unless any clashes with an id already in use; then the whole stack gets fresh ids (SFM-3). **Ids are engine-wide today, not per stack**, which is why the default Untitled stack (ids 1 to 3) clashes with a saved copy of itself. Per-stack ids, as in HyperCard, LiveCode, and the OXT format, are a needed later change, and they affect object references (`button id 12` would need its stack).
+- A stack's `filename` is kept outside its properties, so it is not written into the file (SFM-6). `save this stack` reuses it. Opening a file that is already open goes to that stack instead of loading a second copy.
+- A stack opens completely or not at all: a missing background or a script with an error removes it again.
+- In the HTML: attributes in a fixed order (`id`, `xt-background` for a card, `name`, then the rest sorted); a property whose name means something in HTML (`style`, `title`, `hidden`, anything starting with `on`) is written with an `xt-` prefix, so it never becomes CSS or browser script, and a bare one in a hand-edited file is refused (SFH-4); scripts are written verbatim at the left margin inside `<script type="text/x-xtalk">`, or inside an escaped `<template data-xt="script">` if they contain `</script` or `<!--` (SFH-5); a field's text is one `<p>` per line (SFH-6); `<meta name="xt-format" content="1">` versions the form, and newer versions are refused (SFH-9). The reader accepts hand edits (any quoting, comments, other HTML elements around the `xt-` ones) and reports mistakes with a line number.
+- Not yet: binary data (images, clip samples) as base64 data URLs, which needs binary values in the engine; substacks; the browser preview script (5.18); the binary form.
+
+**Design:**
 
 - One in-memory **stack document** model (a new crate) that every format converts to and from: our text form, our binary form, OXT REVO, later HyperCard. File access goes through the `Host`.
 - **Text form**: a valid HTML5 document. Parts are custom elements with an `xt-` prefix (`<xt-stack>`, `<xt-card>`, `<xt-button>`, `<xt-audioclip>`); scripts are `<script type="text/x-xtalk">`; binary resources are base64 data URLs wrapped at 76 columns; custom properties keep their types (so OXT typed values round-trip); field text is HTML paragraphs and spans. Output is deterministic (fixed attribute order, only non-default properties, LF endings) so diffs are small. An optional, never-changing preview script lays parts out from `rect` in a browser.
@@ -390,7 +405,18 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 - **Browser host (JS):** `put` writes to a message box element; `answer` and `ask` are in-page dialogs, which needs a "waiting for the person" run status (open question 10); `answer file` uses a file input, `ask file` a download; shell is always denied; `the platform` is `HTML5`.
 - **HTML5 backend:** `xt-` custom elements become live widgets; DOM events become messages (`mouseUp`), and property changes update the elements. This is a toolkit backend (roadmap D) aimed at the DOM.
 - **Runtime placement, chosen when saving:** *embedded* (the WASM as base64 in the file; works offline from one file; adds the runtime's size to every stack; identical bytes every save, so no diff churn) or *linked* (`<script src="xt-runtime.js">` beside the stack; tiny). Proposed default: linked; `with runtime` embeds. The embedded runtime carries a version so a newer engine can offer to update it. Script source stays the truth; the page compiles scripts when it loads (5.11).
-- **Order:** `no_std` core, WASM build in CI, `xt-wasm` and the browser host, the text stack format (5.17), then the HTML5 backend.
+- **Main target (Decided, 2026-11-27):** WebAssembly/JS/HTML5 is a main build target for fused standalone apps and for the IDE, and browsers are a main test platform. The HTML5 backend may use standard DOM elements and HTML5 APIs (canvas, SVG, media, storage) for rendering and implementation, and works around sandbox and permission limits where it must.
+- **Presentation roles in the browser:** "native" widgets are DOM elements (button to `<button>`, field to `<textarea>` or a contenteditable block, scrollbar to `<input type="range">`, image to `<img>` or `<canvas>`, graphic to SVG or canvas, card to a positioned container, stack to the page or a window-like container); "drawn" parts render on a `<canvas>`. Same object model and messages either way (R2).
+- **Everything in the browser is asynchronous**, so the VM must be able to pause on any host call, not only `wait`: a new run status meaning "waiting for the host" (open question 10) comes first. The VM's own frame stack already makes this possible.
+- **Sandbox and permissions, and the planned workaround for each** (to verify per browser):
+  - `answer file`: `<input type="file">` needs a user gesture, so the browser host shows an in-page "Choose file" button while the script waits; the file's contents come in through the host, not by path.
+  - `ask file` and `save stack`: the File System Access API where it exists (Chromium), otherwise a download; stacks may also be kept in the browser's private storage (OPFS or IndexedDB).
+  - `answer color`: `<input type="color">`. `answer record` and recording: `getUserMedia` plus `MediaRecorder`, which need a permission prompt and a secure context (check whether `file://` counts in each browser).
+  - `url`: `fetch`, limited by CORS; a page opened from `file://` cannot read other local files.
+  - Shell access: never available. `the platform` is `HTML5`.
+  - The engine's permission layer maps onto browser permissions instead of replacing them.
+- **Testing in browsers:** the engine's conformance tests also run as WebAssembly (in Node.js for speed), and end-to-end page tests run in headless Chromium, Firefox, and WebKit (for example with Playwright, Apache-2.0, as a dev tool outside the Rust crates). CI runs both.
+- **Order (revised):** the "waiting for the host" run status; `xt-wasm` with its JS glue, running the engine tests as WebAssembly; the browser host (message box, dialogs, stack storage); the HTML5 backend (DOM, then canvas for drawn parts); browser tests in CI; then embedding the runtime in `.xtstack.html`. The `no_std` core (B3) is still needed for the Wii, but not for the browser, because `wasm32-unknown-unknown` has a usable `std` (the core already builds for it).
 - **Toolchain:** the maintainer uses rustup's stable toolchain (`~/.cargo/bin`, put ahead of Homebrew on PATH in `~/.zprofile`; Homebrew's `rust` stays installed because another formula needs it to build). The `wasm32-unknown-unknown` target is installed, and `cargo build -p xt-core --target wasm32-unknown-unknown` succeeds (2026-11-27). The Wii target (5.15) will need rustup's nightly plus `rust-src`.
 
 ---
@@ -405,6 +431,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 - Handlers: `on` and `function`, parameters separated by spaces or commas or both, calls in either comma style or space style, `the result`, recursion, `global`.
 - Chunk expressions (section 7).
 - Built-in functions: `abs`, `round`, `trunc`, `sqrt`, `sin`, `cos`, `tan`, `atan`, `ln`, `exp`, `min`, `max`, `random`, `mod`, `div`, `length`, `offset`, `toUpper`, `toLower`, `numToChar`, `charToNum`, `seconds`, `ticks`, `milliseconds`, `param`, `paramCount`, `params`, plus `shell(cmd)`.
+- Stack files: `save stack`, `open stack`, and the `.xtstack.html` text form (5.17).
 - Object model, headless (section 8), including the generic `part` kind (synonyms `widget`, `control`) and the resource kinds `audioClip` and `videoClip` (5.13).
 - CLI: history with arrow keys (stored in `~/.xt_history`), multi-line blocks with a `...` prompt, `:vars`, `:objects`, `:ast <line>`, `:help`, `:quit`, Ctrl-C cancels a line, Ctrl-D exits. `answer` with one button just prints and continues; with several buttons Return accepts the first (default); `ask` Return accepts the default.
 
@@ -415,7 +442,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 - The standard library layer, `hostInfo`, native module registry, the refactor into `librextalk-*` crates.
 - Timers (`send ... in n seconds`), arguments on `send`, `dispatch`.
 - `byte` chunks, tabular chunks, `^`, block comments `/* */` (the spec lists them; the lexer does not support them), date and time formatting (`the date`, `the time`).
-- Toolkit trait and any GUI. Scripted `part` definitions. Stack files and substacks. Extension ABI and FFI. Packager. Legacy import.
+- Toolkit trait and any GUI. Scripted `part` definitions. The binary `.xtstack` form, binary data in stack files, and substacks (the text form `.xtstack.html` is done, 5.17). Extension ABI and FFI. Packager. Legacy import.
 - `LICENSE-MIT`, `LICENSE-APACHE`, CI workflows, `deny.toml`, `CLEANROOM.md` in the repo.
 - Strict and lenient modes, reserved words, protected names and reserved errors, syntax declarations, `part` definitions (the object kinds are still hard-coded in `objects.rs`), the bytecode cache, dialect profiles, and stack file import and export.
 - Clip data (samples, movie bytes), which needs binary values; the containers `file` and `url`; `the platform`, `the processor`, `the environment`; a `no_std` core; the Wii and Wii U targets.

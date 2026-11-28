@@ -3,6 +3,7 @@
 //!     xt                 start the prompt
 //!     xt run file.xt     run a script file
 
+use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process;
@@ -10,7 +11,7 @@ use std::process;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 
-use xt_core::{parse_script, DialogForm, DialogRequest, Host, Interpreter, XtError};
+use xt_core::{parse_script, DialogForm, DialogRequest, Host, Interpreter, PartNode, XtError};
 
 /// The host for a terminal: the message box is standard output, and a wait
 /// really sleeps (the default `sleep` in the `Host` trait).
@@ -92,6 +93,33 @@ impl Host for StdoutHost {
                 }
             }
         }
+    }
+
+    /// Save a stack to a file. The file name's extension picks the format
+    /// (`.xtstack.html` for now). A failed write leaves any old file as it
+    /// was: the new text goes to a temporary file first, which then
+    /// replaces the old one.
+    fn save_stack(&mut self, path: &str, stack: &PartNode) -> Result<(), XtError> {
+        let bytes = xt_stackfile::encode(path, stack)?;
+        let temp = format!("{path}.saving");
+        fs::write(&temp, &bytes)
+            .and_then(|()| fs::rename(&temp, path))
+            .map_err(|e| {
+                let _ = fs::remove_file(&temp);
+                XtError::new(format!("Couldn't save \"{path}\": {e}"))
+            })
+    }
+
+    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> {
+        let bytes =
+            fs::read(path).map_err(|e| XtError::new(format!("Couldn't open \"{path}\": {e}")))?;
+        xt_stackfile::decode(&bytes).map_err(|e| {
+            let place = e
+                .line
+                .map(|l| format!(", line {}", l + 1))
+                .unwrap_or_default();
+            XtError::new(format!("\"{path}\"{place}: {}", e.message))
+        })
     }
 
     /// A terminal has no file or color pickers, so every dialog form becomes

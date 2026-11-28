@@ -858,6 +858,26 @@ impl Parser {
                 let value = self.parse_expr()?;
                 Ok(StmtKind::Set { prop, value })
             }
+            // `save` and `open` are statements only when `stack` follows,
+            // so a handler named `save` or `open` can still be called.
+            "save"
+                if self.is_word_at(1, "stack")
+                    || (self.is_word_at(1, "this") && self.is_word_at(2, "stack")) =>
+            {
+                self.pos += 1;
+                let target = self.parse_object_operand()?;
+                let path = if self.is_word("as") {
+                    self.pos += 1;
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                Ok(StmtKind::SaveStack { target, path })
+            }
+            "open" if self.is_word_at(1, "stack") => {
+                self.pos += 2;
+                Ok(StmtKind::OpenStack(self.parse_expr()?))
+            }
             _ => self.parse_call_or_eval(),
         }
     }

@@ -1,0 +1,9 @@
+[package]
+name = "xt-stackfile"
+description = "Stack file formats for libreXTalk: the .xtstack.html text form (and later the .xtstack binary form)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+xt-core = { path = "../xt-core" }

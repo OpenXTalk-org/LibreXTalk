@@ -18,7 +18,7 @@ use crate::builtins;
 use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, ObjShape, Op, SelShape};
 use crate::error::XtError;
-use crate::objects::{kind_matches, kind_name, ObjId, World};
+use crate::objects::{kind_matches, kind_name, ObjId, PartNode, World};
 use crate::parser::parse_script;
 use crate::shell;
 
@@ -64,6 +64,22 @@ pub trait Host {
         } else {
             Some(request.default.to_string())
         }
+    }
+
+    /// Write a stack to a file (SFM-4). The host picks the file format, for
+    /// example from the file name's extension, and does the writing; the
+    /// engine only hands over the stack as a tree. The default cannot save.
+    fn save_stack(&mut self, path: &str, _stack: &PartNode) -> Result<(), XtError> {
+        Err(XtError::new(format!(
+            "This program can't save stacks to files (\"{path}\")"
+        )))
+    }
+
+    /// Read the stack in a file (SFM-5). The default cannot open files.
+    fn open_stack(&mut self, path: &str) -> Result<PartNode, XtError> {
+        Err(XtError::new(format!(
+            "This program can't open stack files (\"{path}\")"
+        )))
     }
 
     /// May a script run this shell command? A script with shell access can
@@ -477,6 +493,47 @@ impl Interpreter {
                         self.result = "Cancel".to_string();
                     }
                 }
+            }
+            Op::SaveStack { has_path } => {
+                let path = if has_path { Some(self.pop()?) } else { None };
+                let text = self.pop()?;
+                let id = self.world.lookup_ref(&text)?;
+                if self.world.get(id).map(|o| o.kind) != Some(ObjKind::Stack) {
+                    return Err(XtError::new("Only a stack can be saved"));
+                }
+                let path = match path {
+                    Some(p) if !p.is_empty() => p,
+                    Some(_) => return Err(XtError::new("The file name to save to is empty")),
+                    None => self.world.files.get(&id).cloned().ok_or_else(|| {
+                        XtError::new(
+                            "This stack has no file yet. Save it with: save this stack as \"name.xtstack.html\"",
+                        )
+                    })?,
+                };
+                let tree = self.world.export(id)?;
+                host.save_stack(&path, &tree)?;
+                self.world.files.insert(id, path);
+            }
+            Op::OpenStack => {
+                let path = self.pop()?;
+                // A stack opened from this file already is not read twice.
+                let open = self
+                    .world
+                    .files
+                    .iter()
+                    .find(|(_, file)| **file == path)
+                    .map(|(id, _)| *id);
+                let stack = match open {
+                    Some(id) => id,
+                    None => {
+                        let tree = host.open_stack(&path)?;
+                        let stack = self.add_stack(&tree)?;
+                        self.world.files.insert(stack, path);
+                        stack
+                    }
+                };
+                let text = self.world.ref_string(stack).unwrap_or_default();
+                self.push(text);
             }
             Op::DoShell { shell } => {
                 // The first time through, start the command. After that, keep
@@ -1213,6 +1270,42 @@ impl Interpreter {
     }
 
     /// Compile a script and install its handlers on an object.
+    /// A stack as a tree of plain data, for a host or a tool that saves
+    /// stacks itself (SFM-1). `reference` is a stack reference such as
+    /// `stack id 1`.
+    pub fn export_stack(&self, reference: &str) -> Result<PartNode, XtError> {
+        let id = self.world.lookup_ref(reference)?;
+        if self.world.get(id).map(|o| o.kind) != Some(ObjKind::Stack) {
+            return Err(XtError::new("Only a stack can be exported"));
+        }
+        self.world.export(id)
+    }
+
+    /// Add the stack in a tree to the engine without going to it, and
+    /// return its reference (SFM-2).
+    pub fn import_stack(&mut self, tree: &PartNode) -> Result<String, XtError> {
+        let stack = self.add_stack(tree)?;
+        Ok(self.world.ref_string(stack).unwrap_or_default())
+    }
+
+    /// Build a stack from a tree and compile its scripts. If any script has
+    /// an error, the whole stack is removed again, so a stack is either
+    /// opened completely or not at all.
+    fn add_stack(&mut self, tree: &PartNode) -> Result<ObjId, XtError> {
+        let (stack, scripts) = self.world.import_stack(tree)?;
+        for (id, text) in scripts {
+            if let Err(e) = self.set_script(id, &text) {
+                let which = self.world.ref_string(id).unwrap_or_default();
+                self.world.delete(stack);
+                return Err(XtError::new(format!(
+                    "In the script of {which}: {}",
+                    e.message
+                )));
+            }
+        }
+        Ok(stack)
+    }
+
     fn set_script(&mut self, id: ObjId, text: &str) -> Result<(), XtError> {
         let script = parse_script(text).map_err(|e| {
             let place = e

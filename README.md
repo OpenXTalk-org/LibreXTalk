@@ -20,7 +20,8 @@ Inside the prompt, type `:help`. The up and down arrows recall earlier lines (ke
   - `chunk.rs`: finding and replacing characters, words, items, and lines
   - `interp.rs`: the virtual machine, with its own call stack
   - `tests.rs`: whole-script tests
-- `crates/xt-cli`: the `xt` program. It supplies a `Host` that prints to the terminal.
+- `crates/xt-stackfile`: stack files. It turns a stack (as a plain `PartNode` tree from the engine) into `.xtstack.html` text and back.
+- `crates/xt-cli`: the `xt` program. It supplies a `Host` that prints to the terminal, asks for dialog replies, and reads and writes stack files.
 
 ## Why bytecode
 
@@ -51,3 +52,22 @@ host allows it. The prompt allows it. `xt run file.xt` needs `--allow-shell`.
     send mouseUp to button 1                 -- the script's handler runs
 
 `:objects` at the prompt lists the stacks, cards, and controls.
+
+`part`, `control`, and `widget` mean any control (`the number of controls`, `part 2`). `create audioClip "beep"` and `create videoClip` make clips, which belong to the stack and have no rect.
+
+## Dialogs
+
+    answer file "Open which?" of type "txt" or "md"   -- the path in it
+    ask file "Save as:" with "notes.txt"
+    answer folder "Where?"
+    answer color with "red"
+
+Cancelling leaves `it` empty and sets `the result` to `Cancel`. In the terminal you type the path or color; Return accepts the suggestion.
+
+## Stack files
+
+    save this stack as "demo.xtstack.html"
+    save this stack                          -- again, to the same file
+    open stack "demo.xtstack.html"           -- and go to its first card
+
+A `.xtstack.html` file is an ordinary web page, so it opens in a browser and shows small diffs in version control. Each object is an `xt-` element (`<xt-button id="7" name="OK" rect="10,10,90,34">`), scripts sit in `<script type="text/x-xtalk">` blocks, and a field's text is one `<p>` per line. The binary `.xtstack` form is planned.
