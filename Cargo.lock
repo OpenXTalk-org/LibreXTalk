@@ -165,8 +165,16 @@ version = "0.0.1"
 dependencies = [
  "rustyline",
  "xt-core",
+ "xt-stackfile",
 ]
 
 [[package]]
 name = "xt-core"
 version = "0.0.1"
+
+[[package]]
+name = "xt-stackfile"
+version = "0.0.1"
+dependencies = [
+ "xt-core",
+]

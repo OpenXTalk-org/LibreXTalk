@@ -10,4 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 xt-core = { path = "../xt-core" }
+xt-stackfile = { path = "../xt-stackfile" }
 rustyline = "18"
