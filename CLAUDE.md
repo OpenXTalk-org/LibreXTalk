@@ -363,9 +363,11 @@ Besides `answer "prompt" with "A" or "B"` and `ask "prompt" with "default"`, the
 | `answer folder [prompt] [with folder]` | choose a folder | the path in `it` |
 | `answer color` / `answer colour` `[with "default"]` | color picker | the color in `it` |
 | `answer effect` | choose a visual effect | the effect in `it` |
-| `answer record` | sound-recording settings | the host's description in `it` |
+| `answer record` | sound-recording settings | sets the recording parameters used to record the next `audioClip` (see below); today the host's reply goes in `it` |
 
-Cancelling puts empty in `it` and `Cancel` in `the result`. The words are not reserved: `answer file` is the dialog only when the end of the line, `with`, `of`, or a prompt follows, so `answer file & "!"` still shows a variable named `file`. Open: LiveCode's `with type`, choosing several files (`answer files`), what `answer effect` and `answer record` return, how paths are written on each platform, and whether these move into the standard library once syntax declarations exist (5.9). Paths returned by a dialog should count as permission to touch that file (5.13).
+Cancelling puts empty in `it` and `Cancel` in `the result`. The words are not reserved: `answer file` is the dialog only when the end of the line, `with`, `of`, or a prompt follows, so `answer file & "!"` still shows a variable named `file`. **Recording (maintainer's direction, 2026-11-27; not built):** `answer record` sets the parameters for recording sound, and a recording produces an `audioClip` built from them. Proposed shape: the dialog's choices are kept as global properties (`the recordFormat`, `the recordRate`, `the recordChannels`, `the recordSampleSize`), which scripts may also set; a recording command (for example `record sound "name"` ... `stop recording`) records through the `Host`, behind a microphone permission like shell access, and creates an `audioClip` in the current stack holding the sample data, format, channels, sample size, and rate. Those are the fields an OXT audio clip stores, so a recorded clip exports without loss. A headless host cannot record and reports an error. Needs binary values (clip data) and the generic `the NAME` resolution (5.3) first.
+
+Open: LiveCode's `with type`, choosing several files (`answer files`), what `answer effect` returns and how it connects to visual effects, the exact recording command and property names, how paths are written on each platform, and whether these move into the standard library once syntax declarations exist (5.9). Paths returned by a dialog should count as permission to touch that file (5.13).
 
 ### 5.17 Our own stack file format (design in progress)
 
