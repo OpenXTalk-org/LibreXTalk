@@ -401,7 +401,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 - Handlers: `on` and `function`, parameters separated by spaces or commas or both, calls in either comma style or space style, `the result`, recursion, `global`.
 - Chunk expressions (section 7).
 - Built-in functions: `abs`, `round`, `trunc`, `sqrt`, `sin`, `cos`, `tan`, `atan`, `ln`, `exp`, `min`, `max`, `random`, `mod`, `div`, `length`, `offset`, `toUpper`, `toLower`, `numToChar`, `charToNum`, `seconds`, `ticks`, `milliseconds`, `param`, `paramCount`, `params`, plus `shell(cmd)`.
-- Object model, headless (section 8).
+- Object model, headless (section 8), including the generic `part` kind (synonyms `widget`, `control`) and the resource kinds `audioClip` and `videoClip` (5.13).
 - CLI: history with arrow keys (stored in `~/.xt_history`), multi-line blocks with a `...` prompt, `:vars`, `:objects`, `:ast <line>`, `:help`, `:quit`, Ctrl-C cancels a line, Ctrl-D exits. `answer` with one button just prints and continues; with several buttons Return accepts the first (default); `ask` Return accepts the default.
 
 **Not done (do not claim these work)**
@@ -414,7 +414,7 @@ A `.xtstack.html` file should work as a self-contained, offline, interactive web
 - Toolkit trait and any GUI. Scripted `part` definitions. Stack files and substacks. Extension ABI and FFI. Packager. Legacy import.
 - `LICENSE-MIT`, `LICENSE-APACHE`, CI workflows, `deny.toml`, `CLEANROOM.md` in the repo.
 - Strict and lenient modes, reserved words, protected names and reserved errors, syntax declarations, `part` definitions (the object kinds are still hard-coded in `objects.rs`), the bytecode cache, dialect profiles, and stack file import and export.
-- The generic `part` kind and its synonyms `widget` and `control`; the resource kinds `file`, `url`, `audioClip`, `videoClip`; `the platform`, `the processor`, `the environment`; a `no_std` core; the Wii and Wii U targets.
+- Clip data (samples, movie bytes), which needs binary values; the containers `file` and `url`; `the platform`, `the processor`, `the environment`; a `no_std` core; the Wii and Wii U targets.
 
 ---
 
@@ -471,7 +471,9 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 
 > **Direction change.** The kinds and prototypes below are currently hard-coded in `objects.rs`. They are meant to become data: the standard library will define them with `part ... end part` and create them at startup (5.10). The standard set will also gain a generic `part` kind (synonyms `widget` and `control`) and resource kinds (`file`, `url`, `audioClip`, `videoClip`), see 5.13.
 
-- **Kinds**: stack, background, card, group, button, field, scrollbar, image, graphic. A stack holds backgrounds and cards; a card uses one background; cards, backgrounds, and groups hold groups and controls.
+- **Kinds**: stack, background, card, group, button, field, scrollbar, image, graphic, the generic `part`, and the resource kinds `audioClip` and `videoClip`. A stack holds backgrounds, cards, and clips; a card uses one background; cards, backgrounds, and groups hold groups and controls.
+- **Generic `part`** (`widget` and `control` are synonyms): a reference of kind `part` matches any control (group, button, field, scrollbar, image, graphic, or a plain part), so `part 2` is the second control of the card in creation order and `the number of controls` counts them all. The object found keeps its own kind: `put part 1` gives `button id 4`. `create part` makes a plain part with a rect. Provisional rule ID OBJ-13 (check against the spec document).
+- **Clips**: `create audioClip "beep"` and `create videoClip` make a clip in the current stack (or `in stack ...`). Clips have no rect and are not drawn; their message path is the clip, then the stack. Properties so far: `loudness` (audio, 100), `frameRate` (0) and `scale` (1) (video); the clip data waits for stack files. Provisional rule ID OBJ-14.
 - Every object has a unique numeric **id** (never reused); a **number** (position among same-kind siblings, in creation order, which is also front-to-back order); an optional **name** (not unique; first match wins, case-insensitive). A reference as a value is the text `button id 12`. A **field** in a value position gives its text, and in an object position (after `of`, `to`, `me`) it gives the reference. A field is a **container** (can be put into, chunked, `add`ed to, `delete`d from). No other kind is.
 - A new engine starts with one stack named Untitled, one background, one card. `create stack` and `create card` make the new one current.
 - **Properties**: common `name`, `id`, `number`, `owner` (read-only), `script`. Parts with a rect have `rect`, `left`, `top`, `right`, `bottom`, `width`, `height`, `loc` (setting an edge moves the part; setting width/height resizes it keeping the top left). Per-kind defaults are in `objects.rs` and the Part Prototype Table. Boolean properties accept only `true`/`false`. Reading an unset property gives empty text; setting an unknown property creates a custom property.

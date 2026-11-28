@@ -63,7 +63,36 @@ pub fn kind_name(kind: ObjKind) -> &'static str {
         ObjKind::Scrollbar => "scrollbar",
         ObjKind::Image => "image",
         ObjKind::Graphic => "graphic",
+        ObjKind::Part => "part",
+        ObjKind::AudioClip => "audioClip",
+        ObjKind::VideoClip => "videoClip",
     }
+}
+
+/// Is this kind a control: something that sits on a card, a background, or
+/// in a group? These are the kinds the generic `part` matches (OBJ-13).
+pub fn is_control(kind: ObjKind) -> bool {
+    matches!(
+        kind,
+        ObjKind::Group
+            | ObjKind::Button
+            | ObjKind::Field
+            | ObjKind::Scrollbar
+            | ObjKind::Image
+            | ObjKind::Graphic
+            | ObjKind::Part
+    )
+}
+
+/// Resource objects belong to a stack and are not drawn (OBJ-14).
+pub fn is_resource(kind: ObjKind) -> bool {
+    matches!(kind, ObjKind::AudioClip | ObjKind::VideoClip)
+}
+
+/// Does an object of kind `actual` answer to a reference of kind `wanted`?
+/// A reference to `part 2` finds a button as well as a plain part.
+pub fn kind_matches(wanted: ObjKind, actual: ObjKind) -> bool {
+    wanted == actual || (wanted == ObjKind::Part && is_control(actual))
 }
 
 /// Recognize a kind of object by its name. Returns the kind and whether the
@@ -88,6 +117,14 @@ pub fn kind_of_word(word: &str) -> Option<(ObjKind, bool)> {
         "images" => (ObjKind::Image, true),
         "graphic" => (ObjKind::Graphic, false),
         "graphics" => (ObjKind::Graphic, true),
+        // `widget` and `control` are synonyms for `part`, as in OpenXTalk,
+        // which kept `control` for HyperCard compatibility (OBJ-13).
+        "part" | "widget" | "control" => (ObjKind::Part, false),
+        "parts" | "widgets" | "controls" => (ObjKind::Part, true),
+        "audioclip" => (ObjKind::AudioClip, false),
+        "audioclips" => (ObjKind::AudioClip, true),
+        "videoclip" => (ObjKind::VideoClip, false),
+        "videoclips" => (ObjKind::VideoClip, true),
         _ => return None,
     };
     Some(pair)
@@ -158,6 +195,12 @@ const GRAPHIC_PROPS: &[PropDef] = &[
     pd("backcolor", ""),
 ];
 
+const PART_PROPS: &[PropDef] = &[pd("rect", "0,0,100,100"), pd("visible", "true")];
+// Clip data (the samples or the movie bytes) arrives with stack files, which
+// need binary values. Until then a clip holds only its settings.
+const AUDIOCLIP_PROPS: &[PropDef] = &[pd("loudness", "100")];
+const VIDEOCLIP_PROPS: &[PropDef] = &[pd("framerate", "0"), pd("scale", "1")];
+
 fn prototype_props(kind: ObjKind) -> &'static [PropDef] {
     match kind {
         ObjKind::Stack => STACK_PROPS,
@@ -169,12 +212,16 @@ fn prototype_props(kind: ObjKind) -> &'static [PropDef] {
         ObjKind::Scrollbar => SCROLLBAR_PROPS,
         ObjKind::Image => IMAGE_PROPS,
         ObjKind::Graphic => GRAPHIC_PROPS,
+        ObjKind::Part => PART_PROPS,
+        ObjKind::AudioClip => AUDIOCLIP_PROPS,
+        ObjKind::VideoClip => VIDEOCLIP_PROPS,
     }
 }
 
-/// Backgrounds and cards take their size from the stack, so they have no rect.
+/// Backgrounds and cards take their size from the stack, and resource
+/// objects are not drawn, so none of them has a rect.
 fn has_rect(kind: ObjKind) -> bool {
-    !matches!(kind, ObjKind::Background | ObjKind::Card)
+    !matches!(kind, ObjKind::Background | ObjKind::Card) && !is_resource(kind)
 }
 
 fn is_bool_prop(name: &str) -> bool {
@@ -384,7 +431,7 @@ impl World {
             if let (Some((kind, false)), Ok(n)) = (kind_of_word(words[0]), words[2].parse::<i64>())
             {
                 if let Some(&obj_id) = self.by_id.get(&n) {
-                    if self.get(obj_id).is_some_and(|o| o.kind == kind) {
+                    if self.get(obj_id).is_some_and(|o| kind_matches(kind, o.kind)) {
                         return Ok(obj_id);
                     }
                 }
@@ -409,7 +456,7 @@ impl World {
                 .children
                 .iter()
                 .copied()
-                .filter(|c| self.get(*c).is_some_and(|o| o.kind == kind))
+                .filter(|c| self.get(*c).is_some_and(|o| kind_matches(kind, o.kind)))
                 .collect(),
             None => Vec::new(),
         }

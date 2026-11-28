@@ -18,7 +18,7 @@ use crate::builtins;
 use crate::chunk::{self, Selector};
 use crate::compile::{compile_handler, Handler, ObjShape, Op, SelShape};
 use crate::error::XtError;
-use crate::objects::{kind_name, ObjId, World};
+use crate::objects::{kind_matches, kind_name, ObjId, World};
 use crate::parser::parse_script;
 use crate::shell;
 
@@ -870,13 +870,15 @@ impl Interpreter {
     // ----- objects ---------------------------------------------------------
 
     /// Where to look for objects of `kind`: the container named, or else the
-    /// current stack (for cards and backgrounds) or the current card.
+    /// current stack (for cards, backgrounds, and clips) or the current card.
     fn container_for(&self, kind: ObjKind, container: Option<String>) -> Result<ObjId, XtError> {
         if let Some(text) = container {
             return self.world.lookup_ref(&text);
         }
         let default = match kind {
-            ObjKind::Background | ObjKind::Card => self.world.current_stack,
+            ObjKind::Background | ObjKind::Card | ObjKind::AudioClip | ObjKind::VideoClip => {
+                self.world.current_stack
+            }
             _ => self.world.current_card,
         };
         default.ok_or_else(|| XtError::new("There is no current card"))
@@ -894,7 +896,11 @@ impl Interpreter {
             return self
                 .world
                 .by_numeric_id(n)
-                .filter(|id| self.world.get(*id).is_some_and(|o| o.kind == kind))
+                .filter(|id| {
+                    self.world
+                        .get(*id)
+                        .is_some_and(|o| kind_matches(kind, o.kind))
+                })
                 .ok_or_else(|| XtError::new(format!("There is no {} id {n}", kind_name(kind))));
         }
 
@@ -999,7 +1005,7 @@ impl Interpreter {
                 self.world.current_card = self.world.first_card(stack);
                 Ok(stack)
             }
-            ObjKind::Card | ObjKind::Background => {
+            ObjKind::Card | ObjKind::Background | ObjKind::AudioClip | ObjKind::VideoClip => {
                 let stack = match parent_ref {
                     Some(text) => self.world.lookup_ref(&text)?,
                     None => self
@@ -1009,8 +1015,8 @@ impl Interpreter {
                 };
                 if self.world.get(stack).map(|o| o.kind) != Some(ObjKind::Stack) {
                     return Err(XtError::new(format!(
-                        "A {} can only be made in a stack",
-                        kind_name(kind)
+                        "{} can only be made in a stack",
+                        with_article(kind_name(kind))
                     )));
                 }
                 let created = self.world.create(kind, name, Some(stack));
@@ -1396,6 +1402,12 @@ pub fn format_number(n: f64) -> String {
     }
     let s = format!("{n:.10}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// "A card", "An audioClip": the kind name with its article, capitalized.
+fn with_article(name: &str) -> String {
+    let vowel = name.starts_with(['a', 'e', 'i', 'o', 'u']);
+    format!("{} {name}", if vowel { "An" } else { "A" })
 }
 
 fn object_gone() -> XtError {

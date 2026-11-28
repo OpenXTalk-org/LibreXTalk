@@ -81,6 +81,13 @@ pub enum ObjKind {
     Scrollbar,
     Image,
     Graphic,
+    /// The generic kind. `part 2`, `control 2`, and `widget 2` mean the
+    /// second control of any kind; `create part` makes a plain part (OBJ-13).
+    Part,
+    /// A sound stored in a stack. Resource objects have no rect (OBJ-14).
+    AudioClip,
+    /// A movie stored in a stack.
+    VideoClip,
 }
 
 /// How to pick one object of a kind.

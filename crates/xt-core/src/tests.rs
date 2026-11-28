@@ -1437,6 +1437,109 @@ fn object_errors() {
         .contains("There is no card"));
 }
 
+// ----- the generic part kind and resource objects (OBJ-13, OBJ-14) ------------
+
+#[test]
+fn part_control_and_widget_mean_any_control() {
+    let script = r#"
+create button "OK"
+create field "Notes"
+put the number of parts
+put the number of controls
+put the number of widgets
+put the name of part 2
+put part 1
+put "hello" into field "Notes"
+put control "Notes"
+"#;
+    // `part 1` is a button, so its value is its reference; `control "Notes"`
+    // is a field, so its value is its text, as for any field reference.
+    assert_eq!(
+        run(script),
+        vec!["2", "2", "2", "Notes", "button id 4", "hello"]
+    );
+}
+
+#[test]
+fn a_part_reference_by_id_finds_any_control() {
+    let script = r#"
+create button "OK"
+put the name of part id 4
+put the name of button id 4
+"#;
+    assert_eq!(run(script), vec!["OK", "OK"]);
+    // A button id is not a field id, but it is a part id.
+    assert!(run_err("create button \"OK\"\nput the name of field id 4")
+        .message
+        .contains("There is no field id 4"));
+}
+
+#[test]
+fn a_plain_part_can_be_created() {
+    let script = r#"
+create part "Spacer"
+put it
+put the rect of part "Spacer"
+set the width of part "Spacer" to 40
+put the rect of it
+"#;
+    assert_eq!(run(script), vec!["part id 4", "0,0,100,100", "0,0,40,100"]);
+}
+
+#[test]
+fn clips_belong_to_the_stack() {
+    let script = r#"
+create audioClip "beep"
+put it
+create videoClip "intro"
+put it
+put the number of audioClips
+put the number of videoClips
+put the loudness of audioClip "beep"
+put the owner of videoClip 1
+put the number of parts
+"#;
+    assert_eq!(
+        run(script),
+        vec![
+            "audioClip id 4",
+            "videoClip id 5",
+            "1",
+            "1",
+            "100",
+            "stack id 1",
+            "0"
+        ]
+    );
+}
+
+#[test]
+fn clips_have_no_rect_and_stay_with_their_stack() {
+    let script = r#"
+create audioClip "beep"
+put the width of audioClip 1
+create card
+put the number of audioClips
+delete audioClip "beep"
+put the number of audioClips
+"#;
+    assert_eq!(run(script), vec!["", "1", "0"]);
+    assert!(run_err("create audioClip \"beep\" in card 1")
+        .message
+        .contains("An audioClip can only be made in a stack"));
+}
+
+#[test]
+fn a_clip_script_handles_a_message_and_passes_to_the_stack() {
+    let script = r#"
+create videoClip "intro"
+set the script of videoClip 1 to "on play; put the name of me; pass play; end play"
+set the script of this stack to "on play; put stack; end play"
+send play to videoClip "intro"
+"#;
+    assert_eq!(run(script), vec!["intro", "stack"]);
+}
+
 // ----- object scripts and messages -------------------------------------------
 
 #[test]
