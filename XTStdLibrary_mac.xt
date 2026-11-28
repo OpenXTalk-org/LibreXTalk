@@ -1,0 +1,13 @@
+on speak pText pWith pVoice pTo pFile pFilePath
+   if pText is empty then exit to top
+   if pWith is "with" and pVoice is not empty and pTo is "to" and pFile is "file" then
+      do "say " & quote & pText & quote &" -v "&quote& pVoice & quote&" - "&quote & pFilePath & quote as bash
+    else if pWith is "with" and pVoice is not empty then
+      do ("say " & quote & pText & quote &" -v "&quote& pVoice & quote) as bash
+    else
+      do ("say " & quote & pText & quote) as bash
+    end if   
+end speak
+
+Ask "Speak Text:"
+Speak it

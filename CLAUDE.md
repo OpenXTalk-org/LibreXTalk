@@ -4,7 +4,23 @@ libreXTalk (always written in camelCase, lowercase in crate and file names) is a
 
 This file is the project's memory. It was assembled from a long design conversation, so it records decisions, their reasons, what is built, what is only planned, and how to work with the maintainer. Read all of it before changing anything. Where it says **Decided**, do not reopen the question without asking. Where it says **Provisional** or **Open**, it is fair to propose changes.
 
-> **Status warning.** Almost all existing code was written by an AI assistant that could not run a Rust compiler. The maintainer compiled and fixed the earlier steps locally, but the newest steps (shell access, the object model, the line-editor history, and the most recent constants) have not been verified. Your first job in a fresh checkout is `cargo build`, `cargo test`, and fixing whatever breaks, with every fix kept small and explained.
+> **Status warning.** Almost all existing code was written by an AI assistant that could not run a Rust compiler. The maintainer compiled and fixed the earlier steps locally, but the newest steps (shell access, the object model, the line-editor history, and the most recent constants) have not been verified one by one. As of 2026-11-27 the whole workspace builds and `cargo test --workspace` passes (127 tests) on macOS. Your first job in a fresh checkout is `cargo build`, `cargo test`, and fixing whatever breaks, with every fix kept small and explained.
+
+## Recent maintainer decisions (read first)
+
+These came after the first version of this file and change or extend it. Details are in sections 5.7 to 5.12 and the decisions log (section 9).
+
+1. **The maintainer changed the code by hand:** a chunk expression that is out of range now raises a `Chunk expression out of range: ...` error. It used to give empty text. This is in the repo (commit `4835f21`, `chunk::read`), and the test is `out_of_range_reads_are_errors` in `crates/xt-core/src/tests.rs`. This is the strict-mode behavior (5.7).
+2. **Strict and lenient modes** are being considered, not decided. Lenient is HyperCard-like and avoids errors; strict raises them. Core language names and some "protected" standard-library names can never be overridden; others can be, in lenient mode. Conflicts are reported as **reserved errors**, and the reserved set can be **dynamic** because the standard library adds names (5.7).
+3. **Reserved words:** the direction is a small to medium set of reserved words in the core, in the Smalltalk tradition. This **supersedes** the earlier "no reserved words" decision. The code still has none (5.8).
+4. **The standard library provides much of the basic syntax and the platform-specific features** beyond the core language, and it sits just before the engine in the message path (5.3).
+5. **Parts are defined with a `part ... end part` syntax, and the standard library creates the standard part set from such definitions at startup.** The hard-coded prototype tables in `objects.rs` are therefore temporary (5.10).
+6. **Cached precompiled bytecode is welcome**, as long as the engine can recompile from source on the fly whenever the source changes. The language must be extensible through this mechanism, like LiveCode Builder, but **without a second, side-car language** (5.11).
+7. **Interoperability with other xTalks is a long-term goal**: LiveCode and OpenXTalk first, then HyperTalk, then OpenXION, then WebTalk (Tom Perry), SuperCard, Oracle Media Objects, Macromedia Lingo, and others. That includes **importing and exporting stack files**, with graceful downgrading and warnings about data loss (5.12).
+8. **A PDF describing the stack file formats OpenXTalk supports was mentioned but never reached the assistant.** Ask the maintainer to supply it before designing the importers and exporters.
+9. **More standard object types:** besides button, image, field, graphic, and so on, the standard set includes **resource objects** (`file`, `url`, `audioClip`/`audioClips`, `videoClip`/`videoClips`) and a **generic `part`** kind. `widget(s)` and `control(s)` are synonyms for `part`, as in OpenXTalk, for HyperCard compatibility. All are defined with `part ... end part` (5.10, 5.13).
+10. **`the platform` and `the processor` are part of the core language**, because libraries use them to choose implementations (for example, allowing AppleScript and JavaScript-for-Automation scripting only on macOS). `the environment` comes later (5.14).
+11. **A Nintendo Wii / Wii U PowerPC target** (compiled to `.dol`) joins the list of platforms. It forces the core to be `no_std + alloc` capable and to define byte order in every binary format (5.15).
 
 ---
 
@@ -18,11 +34,14 @@ This file is the project's memory. It was assembled from a long design conversat
 4. **Separation of concerns:** the object model, the presentation layer, the host (operating system) interface, and the language engine are separate things with narrow interfaces.
 5. Build standalone apps for many platforms by fusing a prebuilt runtime with a payload (stack, assets, extensions).
 6. Familiar to users of HyperCard, MetaCard, LiveCode, OpenXTalk, and OpenXION: the syntax people already know (`getProp`, `setProp`, `on`, `function`, chunk expressions, `the` forms).
+7. Extensible in xTalk itself: libraries and extensions can add handlers, syntax, and parts, and can be compiled to cached bytecode, with no secondary language (5.9, 5.11).
+8. Interoperable with other xTalk environments, past and present, including importing and exporting their stack files (5.12).
+9. A small core: a small to medium set of reserved words, with the rest of the everyday syntax provided by the standard library (5.8).
 
 **Non-goals**
 
 - Not a HyperCard clone and not a LiveCode clone. Stacks and cards exist as engine prototypes, but nothing in the engine assumes a particular UI.
-- Not a JIT or an ahead-of-time compiler. The interpreter ships inside every app.
+- Not a native-code compiler or JIT (so far). Caching precompiled **bytecode** is welcome (5.11), provided the source script stays the truth and the engine can recompile it on the fly whenever it changes. The interpreter still ships inside every app.
 - Not a copy of any existing engine's source (see the clean-room rules in section 4).
 
 ---
@@ -41,6 +60,16 @@ This file is the project's memory. It was assembled from a long design conversat
 | R8 | Legacy import: HyperCard stacks, resources, WOBA bitmaps, and optionally 68K XCMD/XFCN through emulation. | Planned, later |
 | R9 | **xTalk Standard Library layer** (section 5.3): immutable but overridable, sitting in the message path just before the engine; may contain native Rust modules next to xTalk source modules. | Decided, not yet built |
 | R10 | Reducibility and separation of concerns as first-class design constraints (section 5.2). | Decided |
+| R11 | Strict and lenient interpreter modes, with protected names and reserved errors (5.7). | Open, under design |
+| R12 | A small to medium set of reserved words in the core (Smalltalk tradition) (5.8). | Direction decided, word list open |
+| R13 | Syntax extension written in xTalk itself, with no side-car language (5.9). | Open, central design question |
+| R14 | The standard part set is created by the standard library from `part ... end part` definitions at startup (5.10). | Decided |
+| R15 | Cached precompiled bytecode, always recompilable from source; libraries and extensions extensible through it (5.11). | Decided direction |
+| R16 | Import and export of other xTalk stack formats, with graceful downgrading and loss reports (5.12). | Long-term goal; needs the format PDF |
+| R17 | Standard object kinds include a generic `part` (synonyms `widget`, `control`) and resource objects `file`, `url`, `audioClip`, `videoClip` (5.13). | Decided direction |
+| R18 | `the platform` and `the processor` in the core language; `the environment` later (5.14). | Decided |
+| R19 | A Wii / Wii U PowerPC target producing `.dol` (5.15). | Roadmap target |
+| R20 | The core builds with `no_std` plus `alloc` (feature `std` on by default) and defines byte order in every binary format (5.15). | Decided direction |
 
 ---
 
@@ -85,6 +114,10 @@ This file is the project's memory. It was assembled from a long design conversat
 | WyldCard (defano, Java) | MIT | HyperTalk semantic reference, HyperCard stack import. |
 | ViperCard, LiveCode engine | GPL | **Do not use.** |
 | Executor (ctm) | MIT per HyperZebra's notice | Behavior reference only. |
+| "OpenXTalk supported stack file formats" PDF | Maintainer-supplied. **Not yet received by the assistant.** | Defines the import and export targets (5.12). Ask for it again. |
+| ogc-rs and ogc-sys (rust-wii, Rust bindings to devkitPro's libogc) | MIT (ogc-rs). `no_std`, needs nightly Rust. | Candidate for the Wii backend (5.15). Check libogc's and devkitPro's own licenses before depending on them. |
+| luma (rust-wii, "a Rust rewrite of libogc") | Not checked | Possible alternative to libogc bindings. |
+| rust-wiiu book and `wut`/`wups` crates | Not checked | Candidate base for the Wii U target. Verify each crate's license and output format (5.15). |
 
 ---
 
@@ -120,6 +153,8 @@ The maintainer's description, in summary:
 - The library is **immutable but overridable**: scripts cannot edit it at run time, but any handler defined earlier in the message path (an object, a stack, a user library) overrides it by name.
 - It may hold **non-essential parts of the core syntax** (things that need not be native).
 - It may contain **native Rust modules next to xTalk source modules**, behind the same layer. Scripts cannot tell the difference. Speed-critical things such as `length` stay native.
+- It provides **much of the basic syntax and the platform-specific features** beyond the core language, and it **creates the standard part set from `part ... end part` definitions at startup** (5.10).
+- It can declare **protected** names that scripts may not override (5.7). The set of reserved names therefore depends on which library modules are loaded.
 
 **Message path (target order)**
 
@@ -134,7 +169,7 @@ Today's code puts loose `on` handlers at the engine level and keeps built-ins in
 
 **`the NAME` resolution (target design).** The parser should produce a generic "the NAME [of X]" node and the VM resolves it at run time, so the parser needs no hard-coded list of names. Resolution order:
 
-1. Core special forms: `the result`, `the itemDelimiter`, `the number of <chunk or object kind>`, chunk expressions.
+1. Core special forms: `the result`, `the itemDelimiter`, `the platform`, `the processor` (and later `the environment`), `the number of <chunk or object kind>`, chunk expressions.
 2. An object property, when `of` names an object.
 3. The message path, then the standard library: a `function NAME` or `getProp NAME` handler. `set the NAME to v` calls `setProp NAME`.
 4. Native engine primitives.
@@ -208,6 +243,96 @@ pub trait Host {
 
 Planned additions: `hostInfo(key)` for system information, screen and display queries, clipboard, file dialogs, and the toolkit events interface.
 
+### 5.7 Strict and lenient modes (Open, design in progress)
+
+The maintainer has not decided whether there are two modes. The thinking so far:
+
+- **Lenient** works the way HyperCard did and avoids errors wherever it can: an unassigned variable evaluates to its own name, a missing property is empty, an out-of-range chunk is empty, and so on. Stack authors may **override some built-in syntax** with their own handlers.
+- **Strict** raises errors for those cases. The maintainer's manual change that makes an out-of-range chunk raise `Chunk expression out of range` is the strict behavior.
+- In **both** modes, a script may never override the **core language**, nor the standard-library names that the library marks as **protected** (special cases). A conflict is reported as a **reserved error**, and it should be reported when the script is loaded or compiled (when it defines a handler, variable, part, or property with a reserved name), not when it runs.
+- Three tiers of names: **core** (fixed), **protected standard-library** names (declared by library modules, so "dynamically reserved"), and **ordinary standard-library** names (overridable, at least in lenient mode).
+
+Open points: where the mode lives (engine flag, stack property, script pragma, per extension), the default, whether imported legacy stacks run lenient, and the full list of mode-dependent behaviors. Candidates: unassigned variable, out-of-range chunk, missing property, boolean strictness, arithmetic on non-numbers, deleting a nonexistent chunk, shadowing a library name.
+
+Suggested implementation: one `Mode` value read by the VM and the loader, with every mode-dependent behavior behind it, so the question stays cheap to change.
+
+### 5.8 Reserved words (direction changed)
+
+The earlier decision was "no reserved words, contextual parsing". The new direction, in the Smalltalk tradition, is a **small to medium set of reserved words in the core**. The code still has none: it decides from context with backtracking (`word` and `line` are still ordinary variables). Plan: reserve a small structural set in strict mode, keep contextual reading of non-core words in lenient mode, and let the standard library add dynamically reserved names. A reserved-name conflict is an error at load time.
+
+A **proposal only** (for discussion) for the core set: structure `on`, `function`, `getProp`, `setProp`, `end`, `part`; flow `if`, `then`, `else`, `repeat`, `exit`, `next`, `pass`, `return`; data `put`, `get`, `set`, `global`, `local`; errors `try`, `catch`, `throw`; special words `me`, `the`, `it`; word operators `and`, `or`, `not`, `is`, `contains`, `div`, `mod`. Commands such as `add`, `delete`, `answer`, `ask`, `create`, `go`, `show`, `hide`, and `wait` would become standard-library features if syntax extension (5.9) can express them.
+
+### 5.9 Syntax extension (Open, the central design question)
+
+If most commands, functions, and properties come from the standard library, authors need a way to declare **grammar** (for example `add 5 to x`, or `answer "Sure?" with "Yes" or "No"`) in xTalk itself, with no side-car language. LiveCode Builder's `syntax` definitions are the model to learn from.
+
+Sketch for discussion, not decided:
+
+```
+syntax command "add" <value: expression> "to" <target: container>
+  calls addTo(value, target)
+end syntax
+```
+
+A declaration maps a pattern of literal words and typed slots to a handler call. It is compiled into the parser's tables when the library loads. It is scoped to the layer that declares it. A dialect profile (5.12) is a bundle of such declarations, aliases, and library modules.
+
+Questions: the pattern language; precedence and ambiguity rules; error messages that name the pattern; by-reference targets such as containers and chunks; whether ordinary scripts or only libraries may declare syntax; interaction with reserved words and protected names.
+
+### 5.10 Parts from `part ... end part` definitions (Decided)
+
+The standard part set (stack, background, card, group, button, field, scrollbar, image, graphic) is **not hard-coded**. The standard library defines each part with the `part ... end part` syntax, and the engine creates the set at startup. The core provides only generic object machinery: the arena, properties, children, scripts, the message path, and presentation-role declarations.
+
+Consequences: `ObjKind` and the prototype tables in `objects.rs` become data loaded from part definitions (kind names registered at startup, resolved by the parser through a registry, like `the NAME`); a part definition declares its property schema (type, default, read-only, observers), allowed parents and children, system messages, and presentation role; user-defined parts use the same syntax (section 11 sketch); a bare-core build has no parts at all.
+
+### 5.11 Bytecode cache and the extension model (Decided direction)
+
+- The **source script is the truth.** Compiled bytecode may be cached (beside the source, inside a stack file, or inside a package), keyed by source hash, bytecode version, and the enabled syntax extensions. The engine **recompiles on the fly** whenever the source changes, the cache is missing or stale, or the engine version differs. The cache is never required for correctness.
+- Use a versioned, hand-written binary format, or a small permissive library if one is clearly better. Do not add heavy dependencies to the core.
+- **Extensibility goal:** libraries and extensions are written in xTalk itself, compile to cached bytecode modules, and can declare handlers, syntax, and parts. Trusted modules may call native primitives. This is "like LiveCode Builder, but without a secondary language."
+- Open: whether speed-critical modules need a typed or low-level subset of xTalk (still one language, marked by pragmas or types) or whether native Rust modules cover that need.
+
+### 5.12 Interoperability and stack formats (long-term goal)
+
+- **Dialects, in priority order:** LiveCode and OpenXTalk; HyperCard's HyperTalk; OpenXION; then Tom Perry's WebTalk, SuperCard, Oracle Media Objects (MediaTalk), Macromedia Lingo, and others. Mechanism: **dialect profiles**, each a bundle of alias tables, syntax declarations, and library modules, plus importers and exporters.
+- **Stack file formats:** the maintainer wants to import from and export to the formats OpenXTalk supports, described in a PDF that has not been received. For environments with fewer capabilities (HyperCard 2.4, MetaCard 2.7, and so on) the export must **downgrade as gracefully as possible and tell the user what will be lost** (for example OpenXTalk or LiveCode 8 widgets) before saving. Never drop data silently; keep the original where possible.
+- Design needs: a capability matrix per format; a conversion report with three outcomes (lossless, degraded with a substitute, dropped); a warning before saving to an older format; the part definitions (5.10) carrying capability flags that importers and exporters consult.
+
+### 5.13 Generic `part`, resource objects, and synonyms (Decided direction)
+
+- The standard kinds, all defined by `part ... end part` in the standard library (5.10): `stack`, `background`, `card`, `group`, `button`, `field`, `scrollbar`, `image`, `graphic`, plus the generic **`part`** and the **resource objects** `file`, `url`, `audioClip` (plural `audioClips`), and `videoClip` (plural `videoClips`).
+- **`part` is the generic kind.** `widget(s)` and `control(s)` are **synonyms for `part`**, as in OpenXTalk, which kept `control` for HyperCard compatibility. So `part 1 of card 1`, `control 2`, and `the number of widgets` all mean parts in general. A `button` is a more specific part. New kinds are defined with `part ... end part` (section 11).
+- **Resource objects** have no presentation role (no rect, no visibility). They hold or reach data: audio and video clips belong to a stack and are stored with it; `file` and `url` are container-like (`put url "..." into x`, `put x into file "..."`). Open design points: ownership and storage of clips in stack files; whether `file` and `url` operations block or run in the background (the same suspension model as `do ... as shell` fits); and **permissions**, because both reach outside the engine and must go through the permission layer (like shell access).
+- The kind registry and the synonym table are data (5.10), so a dialect profile can add its own synonyms.
+
+### 5.14 `the platform`, `the processor`, and `the environment` (Decided; not yet built)
+
+These are **core language** features, fixed when the engine is built, read-only, and compared without regard to case. They tell a script what the VM was built for and is running on, so libraries can choose the best implementation (for example, enabling the `applescript` and JavaScript-for-Automation languages only when `the platform` is `macOS`).
+
+| Form | Values (initial; more as targets are added) |
+|---|---|
+| `the platform` | `macOS`, `Windows`, `Linux`, `Unix` (the BSDs and other Unix systems), `iOS`, `Android`, `HTML5`, and later `Wii`, `WiiU` |
+| `the processor` | `X86_64`, `X86`, `Arm`, `Arm64`, `PowerPC`, `JS` (for HTML5) |
+| `the environment` (later) | `standalone`, `development`, `mobile`, and possibly more such as `javavm` and `wasm` |
+
+Both are available without the standard library, because they come from build-time configuration (Rust `cfg(target_os)` and `cfg(target_arch)`), so they must also work in a `no_std` build. Open: the exact value sets (whether each BSD reports `Unix` or its own name; whether Wii and the Wii U's Wii mode report the same; the processor name for WebAssembly builds that are not HTML5), and whether to add `the byteOrder`.
+
+### 5.15 Nintendo Wii and Wii U PowerPC target (roadmap target)
+
+The maintainer wants a Rust toolchain target for the **Wii and Wii U (PowerPC)** that produces **`.dol`** executables. What the assistant found while researching (verify before relying on it):
+
+- The community crate **ogc-rs** (MIT) wraps devkitPro's libogc for Rust on the Wii. It is `no_std`, needs **nightly Rust** with the `rust-src` component, Clang, and the devkitPro toolchain. The same group, rust-wii, also has **luma**, described as a Rust rewrite of libogc.
+- For the Wii U there is a **rust-wiiu** project (a book and the `wut` and `wups` crates). The Wii U's CPU is "Espresso", a 32-bit **big-endian** PowerPC; the recommended homebrew environment is Aroma; the toolchain is devkitPPC. The assistant believes native Wii U homebrew is packaged as `.rpx` (or `.wuhb`) and that **`.dol` files run on the Wii U only in its Wii compatibility mode** (vWii). Confirm this and decide whether `Wii` and `WiiU` are two targets (a `.dol` for Wii and vWii, and a native Wii U build).
+
+**What this target requires of the project**
+
+1. **A `no_std + alloc` core.** The Wii target has no Rust `std`. `librextalk-core` must compile with `#![no_std]` plus `alloc`, with a default-on `std` feature for the desktop. Concretely: `HashMap` becomes `hashbrown` (MIT or Apache-2.0) or `BTreeMap`; `Rc`, `String`, `Vec`, and `format!` come from `alloc`; trig and `ln`/`exp` come from `libm` (permissive) instead of `f64` methods; `std::time`, threads, `std::process`, and `std::io` live outside the core (the `Host` trait, the shell crate, the CLI); `XtError`'s `std::error::Error` impl is behind the `std` feature. This also serves the reducibility goal and WASM.
+2. **Byte order is always explicit.** The Wii is big-endian. Every binary format (the bytecode cache, stack files, packaged payloads) defines its byte order (little-endian is suggested for files) and never relies on in-memory layout. Add a big-endian test run (for example PowerPC under QEMU, or the Dolphin emulator).
+3. **No dynamic loading, no processes.** Extensions are statically registered (as already planned for iOS and WASM). `shell()` and `do ... as shell` are unavailable, and `the platform` says so.
+4. **Small memory.** The engine and libraries should avoid large fixed buffers and keep the bytecode compact. Treat memory as tight (tens of megabytes).
+5. **A console-specific backend** (`librextalk-backend-wii`, later `-wiiu`) that draws with the console's video API and maps the Wii Remote and GameCube controller to pointer and key events. Text entry needs an on-screen keyboard design.
+6. **Packaging:** a nightly Rust build with `-Zbuild-std=core,alloc` and a custom target definition, linked with devkitPPC, converted to `.dol` with devkitPro's `elf2dol`, plus the metadata files the Homebrew Channel expects. CI needs a devkitPro container and a nightly job that is allowed to lag the stable jobs.
+7. **Licensing:** ogc-rs is MIT. Check libogc, devkitPro, `wut`, and any other dependency against the `cargo-deny` policy before using it. Keep all console code in its own crates so the core stays clean.
+
 ---
 
 ## 6. Implementation status (as of this file)
@@ -232,6 +357,8 @@ Planned additions: `hostInfo(key)` for system information, screen and display qu
 - `byte` chunks, tabular chunks, `^`, block comments `/* */` (the spec lists them; the lexer does not support them), date and time formatting (`the date`, `the time`).
 - Toolkit trait and any GUI. Scripted `part` definitions. Stack files and substacks. Extension ABI and FFI. Packager. Legacy import.
 - `LICENSE-MIT`, `LICENSE-APACHE`, CI workflows, `deny.toml`, `CLEANROOM.md` in the repo.
+- Strict and lenient modes, reserved words, protected names and reserved errors, syntax declarations, `part` definitions (the object kinds are still hard-coded in `objects.rs`), the bytecode cache, dialect profiles, and stack file import and export.
+- The generic `part` kind and its synonyms `widget` and `control`; the resource kinds `file`, `url`, `audioClip`, `videoClip`; `the platform`, `the processor`, `the environment`; a `no_std` core; the Wii and Wii U targets.
 
 ---
 
@@ -242,7 +369,7 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 **Lexical**
 
 - UTF-8, case-insensitive. Identifiers: letters, digits, underscore; start with a letter or underscore.
-- **No reserved words.** A word means something only where the grammar expects it. The parser uses context and limited backtracking within one statement. Example: `word` and `line` are chunk types in `word 2 of x` and ordinary variables in `put word into line`.
+- **Currently no reserved words** (the direction has changed, see 5.8). A word means something only where the grammar expects it. The parser uses context and limited backtracking within one statement. Example: `word` and `line` are chunk types in `word 2 of x` and ordinary variables in `put word into line`.
 - Strings are double-quoted, on one line, with no escapes. Use constants for special characters.
 - Comments: `--` and `#` to end of line. The spec also lists `/* */` (not implemented).
 - A **newline or a semicolon ends a statement** (outside strings and comments). `¬` at the end of a line continues it. So `repeat 3 times; put "hi"; end repeat` is valid.
@@ -260,7 +387,7 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 
 - Types: `char`/`character`, `word`, `item`, `line`, plural forms accepted. Ordinals: `first` to `tenth`, `last`, `mid`/`middle` (piece n/2 + 1), `any`. Numbered, expression-indexed (`word i + 1 of x`), ranges (`word 2 to 4 of x`), nested (`word 3 of line 2 of x`). `of`, `in`, `from` are interchangeable. A chunk binds to the nearest operand: `first word of "a b" & "!"` is `(first word of "a b") & "!"`.
 - Counts: `the number of words in x` (the `the` is optional).
-- Write with `put ... into|before|after <chunk> of <variable or field>`. Beyond the end, items and lines pad with delimiters, words and characters raise an error. `delete <chunk> of ...` removes the chunk plus one delimiter (the following one, or the preceding one for the last chunk). Reading beyond the end gives empty text. Empty text has no chunks. Characters are Unicode code points.
+- Write with `put ... into|before|after <chunk> of <variable or field>`. Beyond the end, items and lines pad with delimiters, words and characters raise an error. `delete <chunk> of ...` removes the chunk plus one delimiter (the following one, or the preceding one for the last chunk). **Reading a chunk that is out of range now raises a `Chunk expression out of range` error** (the maintainer's change, commit `4835f21`; it used to give empty text, which is the lenient behavior, see 5.7). Empty text has no chunks. Characters are Unicode code points.
 - `the itemDelimiter` is global, settable, may be several characters, must not be empty.
 
 **Handlers and calls**
@@ -285,6 +412,8 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 ---
 
 ## 8. The object model (summary of the Part Prototype Table)
+
+> **Direction change.** The kinds and prototypes below are currently hard-coded in `objects.rs`. They are meant to become data: the standard library will define them with `part ... end part` and create them at startup (5.10). The standard set will also gain a generic `part` kind (synonyms `widget` and `control`) and resource kinds (`file`, `url`, `audioClip`, `videoClip`), see 5.13.
 
 - **Kinds**: stack, background, card, group, button, field, scrollbar, image, graphic. A stack holds backgrounds and cards; a card uses one background; cards, backgrounds, and groups hold groups and controls.
 - Every object has a unique numeric **id** (never reused); a **number** (position among same-kind siblings, in creation order, which is also front-to-back order); an optional **name** (not unique; first match wins, case-insensitive). A reference as a value is the text `button id 12`. A **field** in a value position gives its text, and in an object position (after `of`, `to`, `me`) it gives the reference. A field is a **container** (can be put into, chunked, `add`ed to, `delete`d from). No other kind is.
@@ -317,12 +446,25 @@ The full spec lives in two Claude Docs documents that the other account cannot o
 12. Background shell commands that return at once and send a message; finer shell permissions than all-or-nothing.
 13. Standard library details: the exact set of native primitives, the `hostInfo` key names, manifest and documentation metadata, how "immutable" is enforced (proposal: library handlers are installed once, outside any object's script table, and `set the script` cannot reach them).
 14. Whether built-ins like `length` should be reachable as the same names whether native or xTalk (assumed yes: same layer, same lookup).
+15. **Strict and lenient modes:** whether there are two, where the mode lives, the default, and the list of mode-dependent behaviors (5.7).
+16. **Reserved words:** which words are reserved in the core, and how the standard library adds dynamic reservations (5.8).
+17. **Syntax extension:** the pattern language and scope rules for declaring grammar in xTalk (5.9).
+18. **Part definitions:** the exact `part` syntax for property schemas, observers, presentation roles, and capability flags (5.10, section 11).
+19. **Bytecode cache:** file format, key, and location (5.11).
+20. **Stack formats:** the capability matrix and loss report design, after the PDF arrives (5.12).
+21. **Dialect profiles:** how HyperTalk, OpenXION, WebTalk, SuperCard, MediaTalk, and Lingo are packaged (5.12).
+22. **Resource objects:** ownership and storage of clips in stack files; whether `file` and `url` access blocks or runs in the background; their permission model (5.13).
+23. **Platform and processor values:** exact value sets, how the BSDs, Wii, vWii, and non-HTML5 WebAssembly report, and whether to add `the byteOrder` (5.14).
+24. **`the environment` values:** `standalone`, `development`, `mobile`, plus `javavm`, `wasm`, and others (5.14).
+25. **Wii versus Wii U:** one target or two; whether a `.dol` runs on the Wii U only in vWii mode; the exact nightly toolchain recipe and custom target definition (5.15).
 
 **Decided in the conversation (do not reopen without asking)**
 
 - The name is libreXTalk; license MIT OR Apache-2.0.
 - Rust; hand-written parser (not a parser generator); bytecode VM with its own frame stack for suspension.
-- No reserved words; contextual parsing with limited backtracking.
+- ~~No reserved words; contextual parsing with limited backtracking.~~ **Superseded:** a small to medium set of reserved words in the core (5.8). The implementation still parses contextually until the set is chosen.
+- Cached bytecode is allowed, as long as it can always be recompiled from source (5.11).
+- Parts are defined with `part ... end part` by the standard library at startup (5.10).
 - Stacks and cards are engine prototypes; toolkits only realize them. Native widgets with drawn fallback.
 - `exit to top` is the escape-all statement name.
 - `of`/`in`/`from` are synonyms in chunk expressions.
@@ -353,6 +495,21 @@ Do these in order. Each ends with `cargo test` green and the spec updated.
 6. Write an Architecture and Goals document and update the spec (message path rule HND-7, `the` resolution EXP-6 and PRP-1, a new Standard Library section).
 7. Exit criteria: all existing tests pass; a library handler `function sysAppearance` works as `the sysAppearance`; a user handler overrides it; a bare-core build still runs core scripts.
 
+**B2. Parts, modes, and syntax extension** (after B; design first)
+1. Choose the reserved word set and the strict/lenient behaviors; add a `Mode` value and reserved errors at load time.
+2. Design and implement the `syntax` declaration mechanism (5.9), then move commands such as `add`, `answer`, `create`, `go`, `show`, and `hide` out of the parser into the standard library where the mechanism allows.
+3. Implement `part ... end part`; move the part prototypes out of `objects.rs` into standard library definitions created at startup.
+4. Add the bytecode cache (5.11) with recompilation on source change.
+5. Exit criteria: the standard part set exists only because the library defines it; a script that defines a handler named like a core word gets a reserved error; the cache can be deleted at any time without changing behavior.
+
+**B3. Platform information and a `no_std` core** (alongside B)
+1. Implement `the platform` and `the processor` as core forms from `cfg(target_os)` and `cfg(target_arch)`, with tests that check the value matches the host the tests run on. `the environment` follows later.
+2. Make `librextalk-core` build with `#![no_std]` plus `alloc` (default `std` feature): replace `HashMap`, move `std::time`, threads, `std::process`, and `std::io` out of the core, use `libm` for floating-point functions. Verify by building for a bare-metal or WASM target in CI.
+3. Define byte order in the bytecode cache and every other binary format.
+4. Exit criteria: a `no_std` build of the core runs the conformance tests under a host harness; the bytecode cache round-trips on a big-endian target.
+
+**B4. Standard kinds** (with B2): define the generic `part` kind with synonyms `widget` and `control`, the resource kinds `file`, `url`, `audioClip`, and `videoClip`, and the existing visual kinds, all through `part ... end part` in the standard library. Resource kinds come with the permission layer.
+
 **C. Standard library content**: system information (`systemVersion`, `sysAppearance`/`systemAppearance`, `screenRect`, `processor`, ...), moving non-essential built-ins out of the engine, documented metadata per handler.
 
 **D. Toolkit trait and first GUI**: `WidgetFactory` per presentation role, property binding table, synchronous `measure`, headless backend plus a drawn backend (`winit` with `tiny-skia`, or `egui`), pointer and key events turned into messages (`mouseUp`, ...), async `answer`/`ask` for GUI hosts.
@@ -360,6 +517,10 @@ Do these in order. Each ends with `cargo test` green and the spec updated.
 **E. Authoring and messaging**: a block syntax for object scripts (for example `on mouseUp in button "Greet"` or a multi-line script literal), `getProp`/`setProp`, scripted `part ... end part` definitions, timers (`send ... in n seconds`), arguments on `send`, plain `do` and `value()`.
 
 **F. Platform**: stack files (zip container plus unpacked text form), substacks, extension manifest and C ABI, `libloading` and `libffi` externals, `do ... as` for JavaScript/Lua/AppleScript, the fused-executable packager, WASM and iOS static registration, legacy import (Mac file and resource readers, HyperCard stack importer with WOBA, optional 68K XCMD emulation).
+
+**G. Interoperability and stack formats**: obtain the OpenXTalk stack format PDF; design the capability matrix and loss report; write importers and exporters for the OpenXTalk and LiveCode formats first, then HyperCard (including the legacy import work in F) and the other dialects in the priority order of 5.12; package each dialect as a profile.
+
+**H. Console targets (Wii, then Wii U)**: after B3. Confirm the toolchain recipe (nightly, `-Zbuild-std`, custom target, devkitPPC, `elf2dol`); get `Hello World` running as a `.dol` in an emulator; build the console backend (drawn widgets, controller input); add the Homebrew Channel metadata; add a CI job. Then decide whether the Wii U needs its own native build.
 
 ---
 
@@ -457,3 +618,14 @@ cargo run -p xt-cli -- run --allow-shell examples/sysinfo.xt
 - **Part**: any object a script can create: stack, background, card, group, button, field, scrollbar, image, graphic.
 - **Presentation role**: what a toolkit must draw for a part kind (PushButton, TextField, ...).
 - **Standard Library (xTalk Standard Library)**: the special layer just before the engine, holding handlers (xTalk or native) that behave like core syntax.
+- **Strict mode / lenient mode**: the two proposed interpreter modes (5.7). Strict raises errors; lenient follows HyperCard and avoids them.
+- **Reserved error**: the error reported when a script defines a name that conflicts with the core language or a protected standard-library name.
+- **Dynamically reserved word**: a name reserved because a loaded standard-library module declared it protected.
+- **Syntax declaration**: an xTalk-source declaration that adds grammar, such as a command pattern, mapped to a handler (5.9).
+- **Dialect profile**: a bundle of aliases, syntax declarations, and library modules that makes the engine understand another xTalk's syntax (5.12).
+- **Bytecode cache**: stored compiled scripts that the engine may use instead of recompiling, and must regenerate when the source changes (5.11).
+- **Resource object**: a part that holds or reaches data and has no presentation role, such as `file`, `url`, `audioClip`, or `videoClip` (5.13).
+- **Generic `part`**: the most general object kind. `widget` and `control` are synonyms for it (5.13).
+- **`the platform` / `the processor` / `the environment`**: core forms that report what the engine was built for and runs on (5.14).
+- **`.dol`**: the executable format of Nintendo Wii homebrew (5.15).
+- **`no_std`**: Rust without the standard library, using only `core` and `alloc`; required for the Wii target and good for reducibility.

@@ -531,7 +531,7 @@ fn ranges() {
 }
 
 #[test]
-fn out_of_range_reads_are_empty() {
+fn out_of_range_reads_are_errors() {
     assert!(run_err(r#"put character 5 of "1234""#)
         .message
         .contains("Chunk expression out of range"));
