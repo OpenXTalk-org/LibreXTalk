@@ -276,7 +276,22 @@ end syntax
 
 A declaration maps a pattern of literal words and typed slots to a handler call. It is compiled into the parser's tables when the library loads. It is scoped to the layer that declares it. A dialect profile (5.12) is a bundle of such declarations, aliases, and library modules.
 
-Questions: the pattern language; precedence and ambiguity rules; error messages that name the pattern; by-reference targets such as containers and chunks; whether ordinary scripts or only libraries may declare syntax; interaction with reserved words and protected names.
+**Motivating example: `speak` (`XTStdLibrary_mac.xt`).** The maintainer wrote this handler to show that "natural language" syntax can already be added with plain xTalk and a shell call, with no engine change. It is a demonstration, not a finished library module. Today it relies on space-style calls: in `speak "Hello" with "Alex" to file "~/hi.aiff"` the words `with`, `to`, and `file` arrive as ordinary parameters, and the handler checks them by position (`if pWith is "with" ...`), then runs macOS `say` through `do ... as bash`. That shows what a declaration must improve on:
+
+- Keywords use up parameter slots, so each optional phrase shifts the parameters after it.
+- A misspelled keyword (`speak it wth "Alex"`) is not an error; it silently takes another branch.
+- Arguments must be single tokens or parenthesized (`speak (line 2 of x)`).
+- Nothing marks a slot's type (text, container, file path) or the platform the command needs (`the platform` is `macOS`).
+
+The declared form would let the parser match the keywords and hand the handler only the values:
+
+```
+syntax command "speak" <text: expression> ["with" <voice: expression>] ["to" "file" <path: expression>]
+  calls speak(text, voice, path)
+end syntax
+```
+
+Questions: the pattern language; optional phrases (as in `speak`); precedence and ambiguity rules; error messages that name the pattern; by-reference targets such as containers and chunks; whether ordinary scripts or only libraries may declare syntax; interaction with reserved words and protected names.
 
 ### 5.10 Parts from `part ... end part` definitions (Decided)
 
